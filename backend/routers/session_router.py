@@ -64,5 +64,5 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
 async def session_prompt(session_id: str, body: SessionPrompt, db: Session = Depends(get_db)):
     response = await call_ai(body.prompt, body.prompt)
     return response
-    # TODO: validate session exists, call AI, create nodes, stream via SSE
+    # TODO: validate session exists, call AI, create nodes, stream via SSE...blablablablabla
     pass

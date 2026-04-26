@@ -1,10 +1,11 @@
 basic  info
-ai.py -> ai calls (azure, gemini etc)
+ai.py -> ai calls (azure, gemini etc). starts with azure, fallback to gemini (so only set one of keys is important)
 prompts.py -> all prompts
 logger.py -> reusable logger
 db.py -> db connection pooler
 main.py -> server entry point
 
+models -> models for different endpoints, and tables as well
 routers -> diff routers, /session, /profile...
 services -> helper files, would run agent loop here
 tests -> any tests
