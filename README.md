@@ -8,6 +8,9 @@ main.py -> server entry point
 models -> models for different endpoints, and tables as well
 routers -> diff routers, /session, /profile...
 services -> helper files, would run agent loop here
+    -> agents folder has agents
+    -> graph_service any functions reusable like create node (either manual or ai calls prevents dupe)
+    -> stream_service main streaming service
 tests -> any tests
 
 tables i created:

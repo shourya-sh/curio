@@ -1,11 +1,12 @@
 #all session routes
 from logger import get_logger
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.responses import StreamingResponse
 from models.session_models import SessionCreate, SessionUpdate, SessionPrompt, SessionDetail
 from models.tables import SessionTable
 from sqlalchemy.orm import Session, joinedload
-from ai import call_ai
-from db import get_db
+from db import get_db, SessionLocal
+from services.stream_service import run_agent_stream
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -59,10 +60,13 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"detail": "deleted"}
 
-# prompt a session... main stuff here lol
+# prompt a sessionstreams SSE events (node_created, link_created, done/error)
 @router.post("/{session_id}/prompt")
-async def session_prompt(session_id: str, body: SessionPrompt, db: Session = Depends(get_db)):
-    response = await call_ai(body.prompt, body.prompt)
-    return response
-    # TODO: validate session exists, call AI, create nodes, stream via SSE...blablablablabla
-    pass
+async def session_prompt(session_id: str, body: SessionPrompt, request: Request):
+    # own DB session — stream outlives the request-scoped one
+    db = SessionLocal()
+    return StreamingResponse(
+        run_agent_stream(session_id, body.prompt, db, request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
