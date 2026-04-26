@@ -50,3 +50,10 @@ CREATE TABLE messages (
   content TEXT NOT NULL,
   created_at TIMESTAMPZ DEFAULT now()
 );
+
+indexes
+CREATE INDEX idx_nodes_session ON nodes(session_id);
+CREATE INDEX idx_node_links_session ON node_links(session_id);
+CREATE INDEX idx_node_links_parent ON node_links(parent_id);
+CREATE INDEX idx_node_links_child ON node_links(child_id);
+CREATE INDEX idx_messages_session ON messages(session_id);
