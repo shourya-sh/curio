@@ -19,7 +19,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 #routers below!
+from routers import session_router, node_router, link_router
+app.include_router(session_router.router)
+app.include_router(node_router.router)
+app.include_router(link_router.router)
 
+
+#health check + db check
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
     try:
