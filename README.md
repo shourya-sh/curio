@@ -61,3 +61,9 @@ CREATE INDEX idx_node_links_session ON node_links(session_id);
 CREATE INDEX idx_node_links_parent ON node_links(parent_id);
 CREATE INDEX idx_node_links_child ON node_links(child_id);
 CREATE INDEX idx_messages_session ON messages(session_id);
+
+ALTER TABLE nodes
+    ADD COLUMN position_x double precision NOT NULL DEFAULT 0,                                                                                                
+    ADD COLUMN position_y double precision NOT NULL DEFAULT 0,
+    ADD COLUMN node_type  varchar(20) NOT NULL DEFAULT 'topic',
+    ADD COLUMN color      varchar(20);
