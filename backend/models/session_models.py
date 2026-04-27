@@ -22,6 +22,10 @@ class NodeOut(BaseModel):
     details: Optional[str] = None
     subtopics: Optional[list] = None
     depth: int
+    position_x: float = 0
+    position_y: float = 0
+    node_type: str = "topic"
+    color: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

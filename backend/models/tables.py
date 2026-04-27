@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, BigInteger, DateTime, ForeignKey, Text
+from sqlalchemy import Column, String, Integer, BigInteger, DateTime, ForeignKey, Text, Float
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 from datetime import datetime
@@ -33,6 +33,10 @@ class NodeTable(Base):
     details = Column(Text, nullable=True)
     subtopics = Column(JSONB, default=list)
     depth = Column(Integer, default=0)
+    position_x = Column(Float, nullable=False, default=0)
+    position_y = Column(Float, nullable=False, default=0)
+    node_type = Column(String(20), nullable=False, default="topic")
+    color = Column(String(20), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 

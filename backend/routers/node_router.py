@@ -2,7 +2,7 @@
 from logger import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 from models.tables import NodeTable
-from models.node_models import NodeCreate, NodeUpdate
+from models.node_models import NodeCreate, NodeUpdate, NodeBulkUpdate
 from sqlalchemy.orm import Session
 from db import get_db
 from services import graph_service
@@ -34,6 +34,10 @@ def create_node(session_id: str, body: NodeCreate, db: Session = Depends(get_db)
         summary=body.summary,
         details=body.details,
         parent_id=body.parent_id,
+        position_x=body.position_x,
+        position_y=body.position_y,
+        node_type=body.node_type,
+        color=body.color,
     )
     db.commit()
     db.refresh(node)
@@ -51,6 +55,21 @@ def update_node(session_id: str, node_id: str, body: NodeUpdate, db: Session = D
     db.commit()
     db.refresh(node)
     return node
+
+
+@router.patch("/")
+def bulk_update_nodes(session_id: str, body: NodeBulkUpdate, db: Session = Depends(get_db)):
+    """Batch-save dirty nodes in a single request (positions, text edits, etc.)."""
+    updated = []
+    for item in body.nodes:
+        fields = item.model_dump(exclude={"id"}, exclude_unset=True)
+        if not fields:
+            continue
+        node = graph_service.update_node(db, session_id, str(item.id), **fields)
+        if node:
+            updated.append(node.id)
+    db.commit()
+    return {"updated": updated}
 
 
 @router.delete("/{node_id}")

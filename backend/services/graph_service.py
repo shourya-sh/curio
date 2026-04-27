@@ -11,12 +11,16 @@ def touch_session(db: Session, session_id: str) -> None:
         row.updated_at = datetime.now(timezone.utc)
 
 
-def create_node(db: Session, session_id: str, topic: str, summary: str = None, details: str = None, parent_id: str = None) -> NodeTable:
+def create_node(db: Session, session_id: str, topic: str, summary: str = None, details: str = None, parent_id: str = None, position_x: float = 0, position_y: float = 0, node_type: str = "topic", color: str = None) -> NodeTable:
     node = NodeTable(
         session_id=session_id,
         topic=topic,
         summary=summary,
         details=details,
+        position_x=position_x,
+        position_y=position_y,
+        node_type=node_type,
+        color=color,
     )
     db.add(node)
     db.flush()
