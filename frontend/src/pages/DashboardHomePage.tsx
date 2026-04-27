@@ -1,18 +1,100 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { createNode, createSession } from '../lib/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate } from 'react-router-dom'
+import { AppTopBar } from '../components/AppTopBar'
+import { DecorativePageBackground } from '../components/DecorativePageBackground'
+import { createNode, createSession, listSessions, type SessionListItem } from '../lib/api'
+import { sessionListQueryKey } from '../lib/queryClient'
+import { formatSessionUpdatedAt } from '../lib/sessionDisplay'
+import { readRecentSessionIds, recordSessionOpened } from '../lib/sessionRecent'
 
-const navItems = ['Workspace', 'Home', 'Library']
 type HomeMode = 'research' | 'plan'
 
 export function DashboardHomePage() {
   const navigate = useNavigate()
-  const [selectedMode, setSelectedMode] = useState<HomeMode>('research')
+  const queryClient = useQueryClient()
+  const [selectedMode, setSelectedMode] = useState<HomeMode | null>(null)
   const [prompt, setPrompt] = useState('')
   const [showEmptyModal, setShowEmptyModal] = useState(false)
   const [showNamingModal, setShowNamingModal] = useState(false)
   const [projectTitle, setProjectTitle] = useState('')
-  const [submitting, setSubmitting] = useState(false)
+  const sessionsQuery = useQuery({
+    queryKey: sessionListQueryKey,
+    queryFn: listSessions,
+    placeholderData: (previous) => previous,
+  })
+  const sessions = sessionsQuery.data ?? []
+  const sessionsLoading = sessionsQuery.isPending && sessions.length === 0
+
+  const createProjectMutation = useMutation({
+    mutationFn: async (variables: { title: string; mode: HomeMode; prompt: string }) => {
+      const session = await createSession({
+        title: variables.title,
+        mode: variables.mode,
+      })
+      await createNode(session.id, {
+        topic: variables.prompt,
+        summary:
+          variables.mode === 'research' ? 'Initial research focus' : 'Initial planning focus',
+        details: variables.prompt,
+      })
+      return { session, variables }
+    },
+    onMutate: async (variables) => {
+      await queryClient.cancelQueries({ queryKey: sessionListQueryKey })
+      const previousSessions =
+        queryClient.getQueryData<SessionListItem[]>(sessionListQueryKey) ?? []
+      const optimisticId = -Date.now()
+      const nowIso = new Date().toISOString()
+      const optimisticSession: SessionListItem = {
+        id: optimisticId,
+        title: variables.title,
+        mode: variables.mode,
+        created_at: nowIso,
+        updated_at: nowIso,
+      }
+      queryClient.setQueryData<SessionListItem[]>(sessionListQueryKey, [
+        optimisticSession,
+        ...previousSessions,
+      ])
+      return { previousSessions, optimisticId }
+    },
+    onError: (error, _variables, context) => {
+      if (context) {
+        queryClient.setQueryData(sessionListQueryKey, context.previousSessions)
+      }
+      const message =
+        error instanceof Error ? error.message : 'Failed to create project session.'
+      window.alert(message)
+    },
+    onSuccess: ({ session, variables }, _submitted, context) => {
+      queryClient.setQueryData<SessionListItem[]>(sessionListQueryKey, (current = []) => {
+        const next = current.map((item) =>
+          item.id === context?.optimisticId ? { ...item, ...session } : item,
+        )
+        if (!next.some((item) => item.id === session.id)) {
+          next.unshift(session)
+        }
+        return next
+      })
+
+      localStorage.setItem('curio:lastSessionId', String(session.id))
+      recordSessionOpened(session.id)
+      navigate(`/workspace/${session.id}`, {
+        state: {
+          mode: variables.mode,
+          title: variables.title,
+          initialPrompt: variables.prompt,
+        },
+      })
+      setShowNamingModal(false)
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: sessionListQueryKey })
+    },
+  })
+
+  const submitting = createProjectMutation.isPending
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const handlePromptChange = (value: string) => {
@@ -23,9 +105,14 @@ export function DashboardHomePage() {
   }
 
 
-  const modeLabel = selectedMode === 'research' ? 'Research mode' : 'Plan mode'
-  const modeIcon = selectedMode === 'research' ? 'R' : 'P'
-  const canSend = prompt.trim().length > 0 && !submitting
+  const modeLabel =
+    selectedMode === 'research'
+      ? 'Research mode'
+      : selectedMode === 'plan'
+        ? 'Plan mode'
+        : ''
+  const modeIcon = selectedMode === 'research' ? 'R' : selectedMode === 'plan' ? 'P' : ''
+  const canSend = prompt.trim().length > 0 && !submitting && selectedMode !== null
   const canCreateProject = projectTitle.trim().length > 0 && !submitting
 
   const suggestedTitle = useMemo(() => {
@@ -38,6 +125,7 @@ export function DashboardHomePage() {
   }, [prompt, selectedMode])
 
   const openNamingModal = () => {
+    if (!selectedMode) return
     if (!prompt.trim()) {
       setShowEmptyModal(true)
       return
@@ -48,39 +136,13 @@ export function DashboardHomePage() {
 
   const submitProject = async () => {
     const title = projectTitle.trim()
-    if (!prompt.trim() || !title || submitting) return
+    if (!prompt.trim() || !title || submitting || !selectedMode) return
 
-    setSubmitting(true)
-    try {
-      const session = await createSession({
-        title,
-        mode: selectedMode,
-      })
-
-      await createNode(session.id, {
-        topic: prompt.trim(),
-        summary:
-          selectedMode === 'research'
-            ? 'Initial research focus'
-            : 'Initial planning focus',
-        details: prompt.trim(),
-      })
-
-      navigate(`/workspace/${session.id}`, {
-        state: {
-          mode: selectedMode,
-          title,
-          initialPrompt: prompt.trim(),
-        },
-      })
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to create project session.'
-      window.alert(message)
-    } finally {
-      setSubmitting(false)
-      setShowNamingModal(false)
-    }
+    await createProjectMutation.mutateAsync({
+      title,
+      mode: selectedMode,
+      prompt: prompt.trim(),
+    })
   }
 
   useEffect(() => {
@@ -89,44 +151,42 @@ export function DashboardHomePage() {
     titleInputRef.current?.select()
   }, [showNamingModal])
 
+  const recentProjectsToShow = useMemo(() => {
+    const recentIds = readRecentSessionIds()
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    const ordered: SessionListItem[] = []
+    const seen = new Set<number>()
+    for (const id of recentIds) {
+      const row = byId.get(id)
+      if (row) {
+        ordered.push(row)
+        seen.add(id)
+      }
+    }
+    const rest = sessions
+      .filter((s) => !seen.has(s.id))
+      .slice()
+      .sort(
+        (a, b) =>
+          new Date(b.updated_at ?? b.created_at).getTime() -
+          new Date(a.updated_at ?? a.created_at).getTime(),
+      )
+    return [...ordered, ...rest].slice(0, 6)
+  }, [sessions])
+
+  const topBarWorkspaceId = useMemo(() => {
+    const recentFirst = readRecentSessionIds()[0]
+    const stored = localStorage.getItem('curio:lastSessionId')
+    const storedNum = stored != null && !Number.isNaN(Number(stored)) ? Number(stored) : null
+    return recentFirst ?? storedNum
+  }, [])
+
   return (
     <div className='app-shell'>
-      <header className='top-nav'>
-        <div className='brand-group'>
-          <span className='brand'>Curio</span>
-        </div>
-
-        <nav className='main-nav'>
-          {navItems.map((item) => (
-            <button
-              key={item}
-              type='button'
-              className={`nav-link ${item === 'Home' ? 'selected' : ''}`}
-            >
-              {item}
-            </button>
-          ))}
-        </nav>
-
-        <div className='nav-actions'>
-          <button type='button' className='icon-btn'>
-            ?
-          </button>
-          <button type='button' className='icon-btn'>
-            ??
-          </button>
-          <button type='button' className='avatar-btn'>
-            S
-          </button>
-        </div>
-      </header>
+      <AppTopBar activeItem='home' workspaceSessionId={topBarWorkspaceId} />
 
       <main className='workspace-grid-bg'>
-        <div className='bubble bubble-cyan' />
-        <div className='bubble bubble-pink' />
-        <div className='bubble bubble-mint' />
-        <div className='bubble bubble-lilac' />
-        <div className='bubble bubble-peach' />
+        <DecorativePageBackground />
 
         <section className='hero'>
           <h1>What&apos;s on your mind?</h1>
@@ -157,11 +217,13 @@ export function DashboardHomePage() {
             </button>
           </div>
 
-          <div className='prompt-composer'>
-            <div className='composer-mode-pill'>
-              <span className={`mode-dot ${selectedMode}`}>{modeIcon}</span>
-              <span>{modeLabel}</span>
-            </div>
+          <div className={`prompt-composer ${selectedMode ? '' : 'no-mode'}`}>
+            {selectedMode ? (
+              <div className='composer-mode-pill'>
+                <span className={`mode-dot ${selectedMode}`}>{modeIcon}</span>
+                <span>{modeLabel}</span>
+              </div>
+            ) : null}
             <textarea
               ref={promptRef}
               placeholder='Start typing a thought or ask a question...'
@@ -191,19 +253,49 @@ export function DashboardHomePage() {
         <section className='recent-projects'>
           <div className='section-header'>
             <h3>Recent Projects</h3>
-            <button type='button' className='view-all'>
+            <Link to='/library' className='view-all'>
               View all
-            </button>
+            </Link>
           </div>
 
-          <div className='empty-project-state'>
-            <p className='empty-kicker'>No projects yet</p>
-            <h4>Create your first Project</h4>
-            <p>
-              Pick a mode, write your first prompt, then click Send. You will name the
-              project before entering the canvas.
-            </p>
-          </div>
+          {sessionsLoading ? (
+            <div className='empty-project-state'>
+              <p className='empty-kicker'>Loading</p>
+              <h4>Fetching your projects</h4>
+              <p>Pulling maps from your workspace.</p>
+            </div>
+          ) : recentProjectsToShow.length === 0 ? (
+            <div className='empty-project-state'>
+              <p className='empty-kicker'>No projects yet</p>
+              <h4>Create your first Project</h4>
+              <p>
+                Pick a mode, write your first prompt, then click Send. You will name the
+                project before entering the canvas.
+              </p>
+            </div>
+          ) : (
+            <div className='library-grid recent-projects-grid'>
+              {recentProjectsToShow.map((project, index) => (
+                <article key={project.id} className='library-project-card'>
+                  <Link to={`/workspace/${project.id}`} className='project-card-link'>
+                    <div className='project-thumb'>
+                      <span className={`project-mode-pill ${project.mode}`}>
+                        {project.mode === 'plan' ? 'Plan mode' : 'Research mode'}
+                      </span>
+                      <div className='thumb-orb orb-a' />
+                      <div className='thumb-orb orb-b' />
+                      <div className='thumb-orb orb-c' />
+                      <div className='thumb-label'>Project #{index + 1}</div>
+                    </div>
+                    <div className='project-meta'>
+                      <h3>{project.title}</h3>
+                      <p>{formatSessionUpdatedAt(project.updated_at, project.created_at)}</p>
+                    </div>
+                  </Link>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </main>
       {showEmptyModal ? (

@@ -24,7 +24,7 @@ def create_session(body: SessionCreate, db: Session = Depends(get_db)):
 # get list of sessions
 @router.get("/")
 def list_sessions(db: Session = Depends(get_db)):
-    return db.query(SessionTable).order_by(SessionTable.created_at.desc()).all()
+    return db.query(SessionTable).order_by(SessionTable.updated_at.desc()).all()
 
 # get session by id all data loaded and returned
 @router.get("/{session_id}", response_model=SessionDetail)

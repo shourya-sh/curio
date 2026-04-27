@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useLocation, useParams } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { useLocation, useParams } from 'react-router-dom'
+import { AppTopBar } from '../components/AppTopBar'
 import { getSession, type SessionDetail } from '../lib/api'
+import { recordSessionOpened } from '../lib/sessionRecent'
 
 interface ChatMessage {
   id: string
@@ -12,52 +15,17 @@ interface ChatMessage {
 export function WorkspaceCanvasPage() {
   const { sessionId = '' } = useParams()
   const location = useLocation()
-  const [session, setSession] = useState<SessionDetail | null>(null)
-  const [loading, setLoading] = useState(true)
   const [chatInput, setChatInput] = useState('')
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
 
-  useEffect(() => {
-    let cancelled = false
-
-    const load = async () => {
-      setLoading(true)
-      try {
-        const data = await getSession(sessionId)
-        if (!cancelled) {
-          setSession(data)
-          setChatMessages([
-            {
-              id: `sys-${data.id}`,
-              role: 'system',
-              content:
-                'Session created. AI expansion is disabled for now; manual node editing is next.',
-              timestamp: new Date().toLocaleTimeString(),
-            },
-          ])
-        }
-      } catch (error) {
-        if (!cancelled) {
-          const message = error instanceof Error ? error.message : 'Failed to load session.'
-          setChatMessages([
-            {
-              id: 'err',
-              role: 'system',
-              content: message,
-              timestamp: new Date().toLocaleTimeString(),
-            },
-          ])
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
-    void load()
-    return () => {
-      cancelled = true
-    }
-  }, [sessionId])
+  const sessionQuery = useQuery<SessionDetail>({
+    queryKey: ['session', sessionId],
+    queryFn: () => getSession(sessionId),
+    enabled: sessionId.length > 0,
+    placeholderData: (previous) => previous,
+  })
+  const session = sessionQuery.data ?? null
+  const loading = sessionQuery.isPending && !session
 
   const rootNode = useMemo(() => {
     if (!session?.nodes?.length) return null
@@ -97,6 +65,36 @@ export function WorkspaceCanvasPage() {
   }
 
   useEffect(() => {
+    if (sessionQuery.error) {
+      const message =
+        sessionQuery.error instanceof Error
+          ? sessionQuery.error.message
+          : 'Failed to load session.'
+      setChatMessages([
+        {
+          id: 'err',
+          role: 'system',
+          content: message,
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ])
+      return
+    }
+    if (!session) return
+    localStorage.setItem('curio:lastSessionId', String(session.id))
+    recordSessionOpened(session.id)
+    setChatMessages([
+      {
+        id: `sys-${session.id}`,
+        role: 'system',
+        content:
+          'Session created. AI expansion is disabled for now; manual node editing is next.',
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ])
+  }, [session, sessionQuery.error])
+
+  useEffect(() => {
     if (!initialPrompt) return
     setChatMessages([
       {
@@ -117,24 +115,7 @@ export function WorkspaceCanvasPage() {
 
   return (
     <div className='mindforge-shell'>
-      <header className='mindforge-topbar'>
-        <div className='mf-brand'>Curio</div>
-        <nav className='mf-nav'>
-          <button type='button'>Workspace</button>
-          <button type='button' className='active'>
-            Home
-          </button>
-          <button type='button'>Library</button>
-        </nav>
-        <div className='mf-actions'>
-          <button type='button' className='export-btn'>
-            Export
-          </button>
-          <Link to='/' className='back-home-link'>
-            Home
-          </Link>
-        </div>
-      </header>
+      <AppTopBar activeItem='workspace' workspaceSessionId={sessionId} />
 
       <main className='mindforge-main'>
         <aside className='mf-left-rail'>

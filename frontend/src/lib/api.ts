@@ -31,8 +31,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export async function createSession(payload: SessionCreatePayload): Promise<{ id: number }> {
-  return request<{ id: number }>('/sessions/', {
+export async function createSession(payload: SessionCreatePayload): Promise<SessionListItem> {
+  return request<SessionListItem>('/sessions/', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
@@ -52,6 +52,8 @@ export interface SessionDetail {
   id: number
   title: string
   mode: SessionMode
+  created_at?: string
+  updated_at?: string
   nodes: Array<{
     id: number
     topic: string
@@ -69,4 +71,32 @@ export interface SessionDetail {
 
 export async function getSession(sessionId: string): Promise<SessionDetail> {
   return request<SessionDetail>(`/sessions/${sessionId}`)
+}
+
+export interface SessionListItem {
+  id: number
+  title: string
+  mode: SessionMode
+  created_at: string
+  updated_at?: string
+}
+
+export async function listSessions(): Promise<SessionListItem[]> {
+  return request<SessionListItem[]>('/sessions/')
+}
+
+export async function updateSessionTitle(
+  sessionId: number,
+  title: string,
+): Promise<SessionListItem> {
+  return request<SessionListItem>(`/sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export async function deleteSession(sessionId: number): Promise<{ detail: string }> {
+  return request<{ detail: string }>(`/sessions/${sessionId}`, {
+    method: 'DELETE',
+  })
 }

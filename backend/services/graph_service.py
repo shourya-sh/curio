@@ -1,5 +1,14 @@
-from models.tables import NodeTable, NodeLinkTable
+from datetime import datetime, timezone
+
+from models.tables import NodeTable, NodeLinkTable, SessionTable
 from sqlalchemy.orm import Session
+
+
+def touch_session(db: Session, session_id: str) -> None:
+    """Bump parent session updated_at when graph data changes (nodes/links)."""
+    row = db.query(SessionTable).filter_by(id=session_id).first()
+    if row:
+        row.updated_at = datetime.now(timezone.utc)
 
 
 def create_node(db: Session, session_id: str, topic: str, summary: str = None, details: str = None, parent_id: str = None) -> NodeTable:
@@ -20,6 +29,7 @@ def create_node(db: Session, session_id: str, topic: str, summary: str = None, d
         )
         db.add(link)
 
+    touch_session(db, session_id)
     return node
 
 
@@ -31,6 +41,7 @@ def update_node(db: Session, session_id: str, node_id: str, **fields) -> NodeTab
     for field, value in fields.items():
         setattr(node, field, value)
 
+    touch_session(db, session_id)
     return node
 
 
@@ -39,6 +50,7 @@ def delete_node(db: Session, session_id: str, node_id: str) -> bool:
     if not node:
         return False
     db.delete(node)
+    touch_session(db, session_id)
     return True
 
 
