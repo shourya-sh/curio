@@ -8,9 +8,9 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path='/' element={<DashboardHomePage />} />
+        <Route path='/' element={<LandingPage />} />
+        <Route path='/home' element={<DashboardHomePage />} />
         <Route path='/library' element={<LibraryPage />} />
-        <Route path='/landing' element={<LandingPage />} />
         <Route path='/workspace/:sessionId' element={<WorkspaceCanvasPage />} />
         <Route path='*' element={<Navigate to='/' replace />} />
       </Routes>
