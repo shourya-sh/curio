@@ -3,6 +3,7 @@ from starlette.requests import Request
 from sqlalchemy.orm import Session
 from models.tables import SessionTable
 from services.agents import research_agent, plan_agent
+from services.token_logging import log_prompt_token_usage
 from logger import get_logger
 
 logger = get_logger("stream_service")
@@ -26,6 +27,12 @@ async def run_agent_stream(session_id: str, prompt: str, db: Session, request: R
 
         # pick agent based on mode
         mode = session.mode
+        log_prompt_token_usage(
+            session_id=session_id,
+            mode=mode,
+            prompt=prompt,
+            source="run_agent_stream",
+        )
         if mode == "research":
             agent = research_agent.run
         elif mode == "plan":
