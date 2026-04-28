@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Any, Optional, List
 from datetime import datetime
 
 
@@ -20,7 +20,8 @@ class NodeOut(BaseModel):
     topic: str
     summary: Optional[str] = None
     details: Optional[str] = None
-    subtopics: Optional[list] = None
+    # JSONB field can hold either AI subtopic arrays or manual metadata objects.
+    subtopics: Optional[Any] = None
     depth: int
     position_x: float = 0
     position_y: float = 0

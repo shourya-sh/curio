@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 
 class NodeCreate(BaseModel):
@@ -11,6 +11,7 @@ class NodeCreate(BaseModel):
     position_y: float = 0
     node_type: str = "topic"
     color: Optional[str] = None
+    subtopics: Optional[Any] = None
 
 
 class NodeUpdate(BaseModel):
@@ -21,6 +22,7 @@ class NodeUpdate(BaseModel):
     position_y: Optional[float] = None
     node_type: Optional[str] = None
     color: Optional[str] = None
+    subtopics: Optional[Any] = None
 
 
 class NodeBulkItem(BaseModel):
@@ -33,6 +35,7 @@ class NodeBulkItem(BaseModel):
     position_y: Optional[float] = None
     node_type: Optional[str] = None
     color: Optional[str] = None
+    subtopics: Optional[Any] = None
 
 
 class NodeBulkUpdate(BaseModel):

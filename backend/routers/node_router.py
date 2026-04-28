@@ -33,11 +33,12 @@ def create_node(session_id: str, body: NodeCreate, db: Session = Depends(get_db)
         topic=body.topic,
         summary=body.summary,
         details=body.details,
-        parent_id=body.parent_id,
+        parent_id=str(body.parent_id) if body.parent_id is not None else None,
         position_x=body.position_x,
         position_y=body.position_y,
         node_type=body.node_type,
         color=body.color,
+        subtopics=body.subtopics,
     )
     db.commit()
     db.refresh(node)

@@ -11,12 +11,26 @@ def touch_session(db: Session, session_id: str) -> None:
         row.updated_at = datetime.now(timezone.utc)
 
 
-def create_node(db: Session, session_id: str, topic: str, summary: str = None, details: str = None, parent_id: str = None, position_x: float = 0, position_y: float = 0, node_type: str = "topic", color: str = None) -> NodeTable:
+def create_node(
+    db: Session,
+    session_id: str,
+    topic: str,
+    summary: str = None,
+    details: str = None,
+    parent_id: str = None,
+    position_x: float = 0,
+    position_y: float = 0,
+    node_type: str = "topic",
+    color: str = None,
+    subtopics=None,
+) -> NodeTable:
+    st = subtopics if subtopics is not None else []
     node = NodeTable(
         session_id=session_id,
         topic=topic,
         summary=summary,
         details=details,
+        subtopics=st,
         position_x=position_x,
         position_y=position_y,
         node_type=node_type,
@@ -59,12 +73,27 @@ def delete_node(db: Session, session_id: str, node_id: str) -> bool:
 
 
 def create_link(db: Session, session_id: str, parent_id: str, child_id: str) -> NodeLinkTable:
+    """Create a parent→child link. If the same edge already exists, return the existing row (idempotent)."""
+    existing = (
+        db.query(NodeLinkTable)
+        .filter_by(
+            session_id=session_id,
+            parent_id=parent_id,
+            child_id=child_id,
+        )
+        .first()
+    )
+    if existing:
+        touch_session(db, session_id)
+        return existing
+
     link = NodeLinkTable(
         session_id=session_id,
         parent_id=parent_id,
         child_id=child_id,
     )
     db.add(link)
+    touch_session(db, session_id)
     return link
 
 
@@ -73,4 +102,5 @@ def delete_link(db: Session, session_id: str, link_id: str) -> bool:
     if not link:
         return False
     db.delete(link)
+    touch_session(db, session_id)
     return True
