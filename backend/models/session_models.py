@@ -12,6 +12,7 @@ class SessionUpdate(BaseModel):
 
 class SessionPrompt(BaseModel):
     prompt: str
+    anchor_node_id: Optional[int] = None
 
 
 class NodeOut(BaseModel):
@@ -39,6 +40,8 @@ class LinkOut(BaseModel):
     session_id: int
     parent_id: int
     child_id: int
+    color: Optional[str] = None
+    line_style: str = "solid"
     created_at: datetime
 
     class Config:

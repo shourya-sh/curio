@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { isSignedIn } from '../lib/auth'
 
 type TopNavItem = 'workspace' | 'home' | 'library'
 
@@ -9,11 +10,12 @@ interface AppTopBarProps {
 
 export function AppTopBar({ activeItem, workspaceSessionId }: AppTopBarProps) {
   const workspaceHref = workspaceSessionId ? `/workspace/${workspaceSessionId}` : '/'
+  const homeHref = isSignedIn() ? '/home' : '/'
 
   return (
     <header className='top-nav'>
       <div className='brand-group'>
-        <Link to='/' className='brand brand-link'>
+        <Link to={homeHref} className='brand brand-link'>
           Curio
         </Link>
       </div>
@@ -22,7 +24,7 @@ export function AppTopBar({ activeItem, workspaceSessionId }: AppTopBarProps) {
         <Link to={workspaceHref} className={`nav-link ${activeItem === 'workspace' ? 'selected' : ''}`}>
           Workspace
         </Link>
-        <Link to='/' className={`nav-link ${activeItem === 'home' ? 'selected' : ''}`}>
+        <Link to={homeHref} className={`nav-link ${activeItem === 'home' ? 'selected' : ''}`}>
           Home
         </Link>
         <Link to='/library' className={`nav-link ${activeItem === 'library' ? 'selected' : ''}`}>

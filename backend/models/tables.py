@@ -52,6 +52,8 @@ class NodeLinkTable(Base):
     session_id = Column(BigInteger, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
     parent_id = Column(BigInteger, ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False)
     child_id = Column(BigInteger, ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False)
+    color = Column(String(20), nullable=True)
+    line_style = Column(String(20), nullable=False, default="solid")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     session = relationship("SessionTable", back_populates="links")

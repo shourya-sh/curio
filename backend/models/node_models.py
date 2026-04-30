@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Any, Optional
+from datetime import datetime
 
 
 class NodeCreate(BaseModel):
@@ -12,6 +13,7 @@ class NodeCreate(BaseModel):
     node_type: str = "topic"
     color: Optional[str] = None
     subtopics: Optional[Any] = None
+    depth: Optional[int] = None
 
 
 class NodeUpdate(BaseModel):
@@ -23,6 +25,7 @@ class NodeUpdate(BaseModel):
     node_type: Optional[str] = None
     color: Optional[str] = None
     subtopics: Optional[Any] = None
+    depth: Optional[int] = None
 
 
 class NodeBulkItem(BaseModel):
@@ -36,7 +39,37 @@ class NodeBulkItem(BaseModel):
     node_type: Optional[str] = None
     color: Optional[str] = None
     subtopics: Optional[Any] = None
+    depth: Optional[int] = None
 
 
 class NodeBulkUpdate(BaseModel):
     nodes: list[NodeBulkItem]
+
+
+class NodeRestoreItem(BaseModel):
+    id: int
+    topic: str
+    summary: Optional[str] = None
+    details: Optional[str] = None
+    subtopics: Optional[Any] = None
+    depth: int = 0
+    position_x: float
+    position_y: float
+    node_type: str = "topic"
+    color: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class LinkRestoreItem(BaseModel):
+    id: Optional[int] = None
+    parent_id: int
+    child_id: int
+    color: Optional[str] = None
+    line_style: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class NodeRestorePayload(BaseModel):
+    node: NodeRestoreItem
+    links: list[LinkRestoreItem] = []

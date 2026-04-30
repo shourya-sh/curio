@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
 import { DecorativePageBackground } from '../components/DecorativePageBackground'
 import { createNode, createSession, listSessions, type SessionListItem } from '../lib/api'
+import { markSignedIn } from '../lib/auth'
 import { sessionListQueryKey } from '../lib/queryClient'
 import { formatSessionUpdatedAt } from '../lib/sessionDisplay'
 import { readRecentSessionIds, recordSessionOpened } from '../lib/sessionRecent'
@@ -18,6 +19,11 @@ export function DashboardHomePage() {
   const [showEmptyModal, setShowEmptyModal] = useState(false)
   const [showNamingModal, setShowNamingModal] = useState(false)
   const [projectTitle, setProjectTitle] = useState('')
+
+  useEffect(() => {
+    markSignedIn()
+  }, [])
+
   const sessionsQuery = useQuery({
     queryKey: sessionListQueryKey,
     queryFn: listSessions,

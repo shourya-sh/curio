@@ -1,5 +1,6 @@
-import { type CSSProperties, useMemo, useState } from 'react'
+import { type CSSProperties, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { isSignedIn, markSignedIn } from '../lib/auth'
 
 type NodeKind = 'center' | 'research' | 'plan' | 'shared'
 type IconName =
@@ -190,9 +191,16 @@ export function LandingPage() {
   const openModal = (type: 'login' | 'create') => setActiveModal(type)
   const closeModal = () => setActiveModal(null)
   const continueToHome = () => {
+    markSignedIn()
     setActiveModal(null)
     navigate('/home')
   }
+
+  useEffect(() => {
+    if (isSignedIn()) {
+      navigate('/home', { replace: true })
+    }
+  }, [navigate])
   const getNodeRadius = (node: LandingNode) => (node.kind === 'center' ? 8.2 : 5.1)
   const getAnchorPoint = (node: LandingNode, side: LinkSide) => {
     const radius = getNodeRadius(node)

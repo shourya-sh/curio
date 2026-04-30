@@ -6,6 +6,7 @@ from models.session_models import SessionCreate, SessionUpdate, SessionPrompt, S
 from models.tables import SessionTable
 from sqlalchemy.orm import Session, joinedload
 from db import get_db, SessionLocal
+from services.rate_limit import limit_ai_prompt
 from services.stream_service import run_agent_stream
 
 
@@ -62,11 +63,16 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
 
 # prompt a sessionstreams SSE events (node_created, link_created, done/error)
 @router.post("/{session_id}/prompt")
-async def session_prompt(session_id: str, body: SessionPrompt, request: Request):
+async def session_prompt(
+    session_id: str,
+    body: SessionPrompt,
+    request: Request,
+    _rate_limit: None = Depends(limit_ai_prompt),
+):
     # own DB session — stream outlives the request-scoped one
     db = SessionLocal()
     return StreamingResponse(
-        run_agent_stream(session_id, body.prompt, db, request),
+        run_agent_stream(session_id, body.prompt, db, request, anchor_node_id=body.anchor_node_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

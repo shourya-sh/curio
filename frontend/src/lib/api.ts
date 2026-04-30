@@ -1,10 +1,27 @@
 export type SessionMode = 'research' | 'plan'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+function resolveApiBase(): string {
+  const envBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
+  if (envBase) return envBase.replace(/\/+$/, '')
+
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname || 'localhost'
+    return `http://${host}:8000`
+  }
+
+  return 'http://localhost:8000'
+}
+
+const API_BASE = resolveApiBase()
 
 interface SessionCreatePayload {
   title: string
   mode: SessionMode
+}
+
+export interface SessionPromptPayload {
+  prompt: string
+  anchor_node_id?: number | null
 }
 
 export interface NodeOut {
@@ -23,12 +40,21 @@ export interface NodeOut {
   updated_at: string
 }
 
+export type LinkLineStyle = 'solid' | 'dashed' | 'dotted' | 'bold'
+
 export interface LinkOut {
   id: number
   session_id: number
   parent_id: number
   child_id: number
+  color?: string | null
+  line_style?: LinkLineStyle | string | null
   created_at: string
+}
+
+export interface NodeRestorePayload {
+  node: NodeOut
+  links: LinkOut[]
 }
 
 export interface MessageOut {
@@ -94,6 +120,13 @@ export interface NodeBulkUpdatePayload {
 export interface LinkCreatePayload {
   parent_id: number
   child_id: number
+  color?: string | null
+  line_style?: LinkLineStyle | string | null
+}
+
+export interface LinkUpdatePayload {
+  color?: string | null
+  line_style?: LinkLineStyle | string | null
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -170,6 +203,17 @@ export async function deleteNode(
   })
 }
 
+export async function restoreNode(
+  sessionId: number,
+  nodeId: number,
+  payload: NodeRestorePayload,
+): Promise<NodeOut> {
+  return request<NodeOut>(`/sessions/${sessionId}/nodes/${nodeId}/restore`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function createLink(
   sessionId: number,
   payload: LinkCreatePayload,
@@ -180,12 +224,33 @@ export async function createLink(
   })
 }
 
+export async function updateLink(
+  sessionId: number,
+  linkId: number,
+  payload: LinkUpdatePayload,
+): Promise<LinkOut> {
+  return request<LinkOut>(`/sessions/${sessionId}/links/${linkId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function deleteLink(
   sessionId: number,
   linkId: number,
 ): Promise<{ detail: string }> {
   return request<{ detail: string }>(`/sessions/${sessionId}/links/${linkId}`, {
     method: 'DELETE',
+  })
+}
+
+export async function restoreLink(
+  sessionId: number,
+  link: LinkOut,
+): Promise<LinkOut> {
+  return request<LinkOut>(`/sessions/${sessionId}/links/${link.id}/restore`, {
+    method: 'POST',
+    body: JSON.stringify(link),
   })
 }
 
@@ -219,4 +284,70 @@ export async function deleteSession(sessionId: number): Promise<{ detail: string
   return request<{ detail: string }>(`/sessions/${sessionId}`, {
     method: 'DELETE',
   })
+}
+
+export interface ResearchSource {
+  title: string
+  url?: string
+  publisher?: string
+  year?: string
+  summary?: string
+  excerpt?: string
+  relevance?: string
+}
+
+export type SessionPromptEvent =
+  | { type: 'status'; data: { message?: string } }
+  | { type: 'node_created'; data: NodeOut }
+  | { type: 'link_created'; data: LinkOut }
+  | { type: 'message_created'; data: MessageOut }
+  | {
+      type: 'sources_created'
+      data: { id?: number; session_id?: number; sources: ResearchSource[]; created_at?: string | null }
+    }
+  | { type: 'done'; data: Record<string, never> }
+  | { type: 'error'; data: { message?: string } }
+  | { type: string; data: unknown }
+
+export async function postSessionPromptStream(
+  sessionId: number,
+  payload: SessionPromptPayload,
+  onEvent: (event: SessionPromptEvent) => void,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/sessions/${sessionId}/prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok || !response.body) {
+    const body = await response.text()
+    throw new Error(body || `Request failed (${response.status})`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const flushFrame = (frame: string) => {
+    let eventType = 'message'
+    const dataLines: string[] = []
+    for (const rawLine of frame.split(/\r?\n/)) {
+      if (rawLine.startsWith('event:')) eventType = rawLine.slice(6).trim()
+      if (rawLine.startsWith('data:')) dataLines.push(rawLine.slice(5).trim())
+    }
+    if (dataLines.length === 0) return
+    const dataText = dataLines.join('\n')
+    const data = dataText ? JSON.parse(dataText) : {}
+    onEvent({ type: eventType, data } as SessionPromptEvent)
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const frames = buffer.split(/\n\n/)
+    buffer = frames.pop() ?? ''
+    frames.forEach(flushFrame)
+  }
+  if (buffer.trim()) flushFrame(buffer)
 }

@@ -16,6 +16,24 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
+def ensure_schema() -> None:
+    """
+    Apply idempotent DDL so the live database matches SQLAlchemy models.
+    Prevents query crashes when migrations were not run against this DATABASE_URL
+    (e.g. Supabase session pooler vs local, or a fresh clone).
+    """
+    from sqlalchemy import text
+
+    statements = (
+        "ALTER TABLE node_links ADD COLUMN IF NOT EXISTS color VARCHAR(20)",
+        "ALTER TABLE node_links ADD COLUMN IF NOT EXISTS line_style VARCHAR(20) NOT NULL DEFAULT 'solid'",
+    )
+    with engine.begin() as conn:
+        for sql in statements:
+            conn.execute(text(sql))
+
+
 def get_db():
     db = SessionLocal()
     try:

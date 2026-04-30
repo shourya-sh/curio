@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
@@ -9,6 +9,7 @@ import {
   type SessionListItem,
   updateSessionTitle,
 } from '../lib/api'
+import { markSignedIn } from '../lib/auth'
 import { sessionListQueryKey } from '../lib/queryClient'
 import { formatSessionUpdatedAt } from '../lib/sessionDisplay'
 import { readRecentSessionIds, removeSessionFromRecent } from '../lib/sessionRecent'
@@ -19,6 +20,10 @@ export function LibraryPage() {
   const [renameTarget, setRenameTarget] = useState<SessionListItem | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<SessionListItem | null>(null)
+
+  useEffect(() => {
+    markSignedIn()
+  }, [])
 
   const sessionsQuery = useQuery({
     queryKey: sessionListQueryKey,
@@ -163,7 +168,7 @@ export function LibraryPage() {
             <div className='library-empty-state'>
               <h3>Create your first project</h3>
               <p>Start from Home and generate your first Curio map.</p>
-              <Link to='/' className='library-empty-action'>
+              <Link to='/home' className='library-empty-action'>
                 Go to Home
               </Link>
             </div>

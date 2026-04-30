@@ -1,7 +1,7 @@
 #all link routes
 from logger import get_logger
 from fastapi import APIRouter, Depends, HTTPException
-from models.link_models import LinkCreate
+from models.link_models import LinkCreate, LinkRestorePayload, LinkUpdate
 from sqlalchemy.orm import Session
 from db import get_db
 from services import graph_service
@@ -24,7 +24,24 @@ def create_link(session_id: str, body: LinkCreate, db: Session = Depends(get_db)
         session_id=session_id,
         parent_id=body.parent_id,
         child_id=body.child_id,
+        color=body.color,
+        line_style=body.line_style,
     )
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+@router.patch("/{link_id}")
+def update_link(session_id: str, link_id: str, body: LinkUpdate, db: Session = Depends(get_db)):
+    link = graph_service.update_link(
+        db,
+        session_id,
+        link_id,
+        **body.model_dump(exclude_unset=True),
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
     db.commit()
     db.refresh(link)
     return link
@@ -36,3 +53,16 @@ def delete_link(session_id: str, link_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Link not found")
     db.commit()
     return {"detail": "deleted"}
+
+
+@router.post("/{link_id}/restore")
+def restore_link(session_id: str, link_id: str, body: LinkRestorePayload, db: Session = Depends(get_db)):
+    if str(body.id) != str(link_id):
+        raise HTTPException(status_code=400, detail="Link id mismatch")
+    try:
+        link = graph_service.restore_link(db, session_id, body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(link)
+    return link

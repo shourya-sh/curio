@@ -2,7 +2,7 @@
 from logger import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 from models.tables import NodeTable
-from models.node_models import NodeCreate, NodeUpdate, NodeBulkUpdate
+from models.node_models import NodeCreate, NodeUpdate, NodeBulkUpdate, NodeRestorePayload
 from sqlalchemy.orm import Session
 from db import get_db
 from services import graph_service
@@ -39,6 +39,7 @@ def create_node(session_id: str, body: NodeCreate, db: Session = Depends(get_db)
         node_type=body.node_type,
         color=body.color,
         subtopics=body.subtopics,
+        depth=body.depth,
     )
     db.commit()
     db.refresh(node)
@@ -79,3 +80,15 @@ def delete_node(session_id: str, node_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Node not found")
     db.commit()
     return {"detail": "deleted"}
+
+
+@router.post("/{node_id}/restore")
+def restore_node(session_id: str, node_id: str, body: NodeRestorePayload, db: Session = Depends(get_db)):
+    if str(body.node.id) != str(node_id):
+        raise HTTPException(status_code=400, detail="Node id mismatch")
+    node_dict = body.node.model_dump(exclude_none=True)
+    links = [item.model_dump(exclude_none=True) for item in body.links]
+    node = graph_service.restore_deleted_node(db, session_id, node_dict, links)
+    db.commit()
+    db.refresh(node)
+    return node
