@@ -6,7 +6,6 @@ import {
   MAX_NODE_RADIUS,
   MIN_NODE_RADIUS,
   readNodeBoxPx,
-  readNodeRadiusPx,
 } from '../../lib/nodeDisplay'
 import { nodeOrbStyle } from '../../lib/nodeOrbStyle'
 
@@ -41,14 +40,23 @@ function clampZoom(value: number): number {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value))
 }
 
-function anchorPoint(cx: number, cy: number, radius: number, tx: number, ty: number) {
+function anchorPoint(cx: number, cy: number, width: number, height: number, tx: number, ty: number) {
   const dx = tx - cx
   const dy = ty - cy
-  const len = Math.hypot(dx, dy) || 1
-  return {
-    x: cx + (dx / len) * radius,
-    y: cy + (dy / len) * radius,
+  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
+    return { x: cx, y: cy }
   }
+  const sx = Math.abs(dx) > 0.001 ? (width / 2) / Math.abs(dx) : Infinity
+  const sy = Math.abs(dy) > 0.001 ? (height / 2) / Math.abs(dy) : Infinity
+  const scale = Math.min(sx, sy)
+  return {
+    x: cx + dx * scale,
+    y: cy + dy * scale,
+  }
+}
+
+function pointInsideNode(lx: number, ly: number, cx: number, cy: number, width: number, height: number): boolean {
+  return Math.abs(lx - cx) <= width / 2 + 10 && Math.abs(ly - cy) <= height / 2 + 10
 }
 
 type Props = {
@@ -135,10 +143,7 @@ export function MindMapCanvas({
     const r = el.getBoundingClientRect()
     const localX = (clientX - r.left - viewport.x) / viewport.scale
     const localY = (clientY - r.top - viewport.y) / viewport.scale
-    return {
-      x: (localX / r.width) * CANVAS_W,
-      y: (localY / r.height) * CANVAS_H,
-    }
+    return { x: localX, y: localY }
   }, [viewport])
 
   const zoomAt = useCallback((clientX: number, clientY: number, nextScaleRaw: number) => {
@@ -180,23 +185,19 @@ export function MindMapCanvas({
     let maxY = -Infinity
     for (const n of nodes) {
       const p = pendingPosition?.get(n.id) ?? { x: n.position_x, y: n.position_y }
-      const r = readNodeRadiusPx(n)
-      minX = Math.min(minX, p.x - r)
-      maxX = Math.max(maxX, p.x + r)
-      minY = Math.min(minY, p.y - r)
-      maxY = Math.max(maxY, p.y + r)
+      const box = readNodeBoxPx(n)
+      minX = Math.min(minX, p.x - box.width / 2)
+      maxX = Math.max(maxX, p.x + box.width / 2)
+      minY = Math.min(minY, p.y - box.height / 2)
+      maxY = Math.max(maxY, p.y + box.height / 2)
     }
 
     const pad = 48
-    const minVx = (minX / CANVAS_W) * W
-    const maxVx = (maxX / CANVAS_W) * W
-    const minVy = (minY / CANVAS_H) * H
-    const maxVy = (maxY / CANVAS_H) * H
-    const cw = Math.max(maxVx - minVx, 1)
-    const ch = Math.max(maxVy - minVy, 1)
+    const cw = Math.max(maxX - minX, 1)
+    const ch = Math.max(maxY - minY, 1)
     const scale = clampZoom(Math.min((W - 2 * pad) / cw, (H - 2 * pad) / ch))
-    const cx = (minVx + maxVx) / 2
-    const cy = (minVy + maxVy) / 2
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
     setViewport({
       scale,
       x: W / 2 - cx * scale,
@@ -302,9 +303,9 @@ export function MindMapCanvas({
       for (const n of nodes) {
         if (n.id === excludeId) continue
         const p = posLive(n)
-        const rad = readNodeRadiusPx(n)
+        const box = readNodeBoxPx(n)
         const d = Math.hypot(lx - p.x, ly - p.y)
-        if (d <= rad + 10 && d < bestD) {
+        if (pointInsideNode(lx, ly, p.x, p.y, box.width, box.height) && d < bestD) {
           bestD = d
           best = n
         }
@@ -328,9 +329,9 @@ export function MindMapCanvas({
       const nx = d.startNode.x + (l.x - d.startPointer.x)
       const ny = d.startNode.y + (l.y - d.startPointer.y)
       const nodeRow = nodes.find((o) => o.id === d.id)
-      const rad = nodeRow ? readNodeRadiusPx(nodeRow) : DEFAULT_NODE_RADIUS
-      const sx = snapCoord(Math.max(rad, Math.min(CANVAS_W - rad, nx)))
-      const sy = snapCoord(Math.max(rad, Math.min(CANVAS_H - rad, ny)))
+      const box = nodeRow ? readNodeBoxPx(nodeRow) : { width: DEFAULT_NODE_RADIUS * 2, height: DEFAULT_NODE_RADIUS * 2 }
+      const sx = snapCoord(Math.max(box.width / 2, Math.min(CANVAS_W - box.width / 2, nx)))
+      const sy = snapCoord(Math.max(box.height / 2, Math.min(CANVAS_H - box.height / 2, ny)))
       onDragEnd(d.id, sx, sy)
       setDrag(null)
       setMovePointer(null)
@@ -552,6 +553,8 @@ export function MindMapCanvas({
         className='mm-canvas__viewport'
         style={{
           transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
+          width: `${CANVAS_W}px`,
+          height: `${CANVAS_H}px`,
         }}
       >
         <div className='mm-canvas__grid' aria-hidden />
@@ -573,10 +576,10 @@ export function MindMapCanvas({
           if (!a || !b) return null
           const c1 = posLive(a)
           const c2 = posLive(b)
-          const r1 = readNodeRadiusPx(a)
-          const r2 = readNodeRadiusPx(b)
-          const p1 = anchorPoint(c1.x, c1.y, r1, c2.x, c2.y)
-          const p2 = anchorPoint(c2.x, c2.y, r2, c1.x, c1.y)
+          const b1 = readNodeBoxPx(a)
+          const b2 = readNodeBoxPx(b)
+          const p1 = anchorPoint(c1.x, c1.y, b1.width, b1.height, c2.x, c2.y)
+          const p2 = anchorPoint(c2.x, c2.y, b2.width, b2.height, c1.x, c1.y)
           const d = bezierForEdge(p1.x, p1.y, p2.x, p2.y)
           const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
           const raw = (link.line_style ?? 'solid') as string
@@ -608,6 +611,11 @@ export function MindMapCanvas({
               />
               <path
                 d={d}
+                className='mm-edge-underlay'
+                pointerEvents='none'
+              />
+              <path
+                d={d}
                 className={`mm-edge mm-edge--${style}${isSel ? ' mm-edge--selected' : ''}`}
                 style={!isSel && link.color ? { stroke: link.color } : undefined}
                 pointerEvents='none'
@@ -620,12 +628,15 @@ export function MindMapCanvas({
             const source = nodes.find((n) => n.id === wireDraft.fromId)
             if (!source) return null
             const sourceCenter = posLive(source)
-            const sourceRadius = readNodeRadiusPx(source)
+            const sourceBox = readNodeBoxPx(source)
             const target = wireTargetId != null ? nodes.find((n) => n.id === wireTargetId) ?? null : null
             const targetCenter = target ? posLive(target) : { x: wireDraft.x1, y: wireDraft.y1 }
-            const from = anchorPoint(sourceCenter.x, sourceCenter.y, sourceRadius, targetCenter.x, targetCenter.y)
+            const from = anchorPoint(sourceCenter.x, sourceCenter.y, sourceBox.width, sourceBox.height, targetCenter.x, targetCenter.y)
             const to = target
-              ? anchorPoint(targetCenter.x, targetCenter.y, readNodeRadiusPx(target), sourceCenter.x, sourceCenter.y)
+              ? (() => {
+                  const targetBox = readNodeBoxPx(target)
+                  return anchorPoint(targetCenter.x, targetCenter.y, targetBox.width, targetBox.height, sourceCenter.x, sourceCenter.y)
+                })()
               : { x: wireDraft.x1, y: wireDraft.y1 }
             return <path d={bezierForEdge(from.x, from.y, to.x, to.y)} className='mm-edge mm-edge--draft' />
           })()
@@ -644,10 +655,8 @@ export function MindMapCanvas({
         const orb = nodeOrbStyle(n.color)
         const isSel = selectedId === n.id
         const box = readNodeBoxPx(n)
-        const wPct = (box.width / CANVAS_W) * 100
-        const hPct = (box.height / CANVAS_H) * 100
-        const left = `${(p.x / CANVAS_W) * 100}%`
-        const top = `${(p.y / CANVAS_H) * 100}%`
+        const left = `${p.x}px`
+        const top = `${p.y}px`
         const wireFrom = connectMode && wireDraft?.fromId === n.id
         const wireTarget = connectMode && wireTargetId === n.id
         return (
@@ -661,13 +670,14 @@ export function MindMapCanvas({
             style={{
               left,
               top,
-              width: `${wPct}%`,
-              height: `${hPct}%`,
+              width: `${box.width}px`,
+              height: `${box.height}px`,
               aspectRatio: box.manual ? '1' : 'auto',
               background: orb.background,
               color: orb.color,
               borderRadius: box.manual ? '999px' : '999px',
               ['--mm-orb-font-size' as string]: `${box.fontSize}px`,
+              ['--mm-orb-lines' as string]: box.lines,
               boxShadow: isSel
                 ? '0 0 0 3px rgba(20, 184, 166, 0.55), 0 12px 36px rgba(15, 23, 42, 0.12)'
                 : '0 8px 28px rgba(15, 23, 42, 0.1)',

@@ -4,8 +4,9 @@ import { snapCoord } from './canvasConstants'
 import { readNodeBoxPx } from './nodeDisplay'
 
 const POS_EPS = 0.03
-const BODY_GAP = 30
-const EDGE_MARGIN = 36
+const BODY_GAP = 116
+const LAYER_GAP = 280
+const EDGE_MARGIN = 120
 
 function sameStackedPosition(a: NodeOut, b: NodeOut): boolean {
   return Math.abs(a.position_x - b.position_x) < POS_EPS && Math.abs(a.position_y - b.position_y) < POS_EPS
@@ -124,19 +125,39 @@ export function layoutReadableGraph(nodes: NodeOut[], links: LinkOut[]): NodeBul
   const maxLayer = Math.max(0, ...nodes.map((node) => layer.get(node.id) ?? Math.max(0, node.depth)))
   const layerCount = maxLayer + 1
   const columns = Math.max(1, layerCount)
+  const maxWidthByLayer = new Map<number, number>()
+  for (const node of nodes) {
+    const l = layer.get(node.id) ?? Math.max(0, node.depth)
+    maxWidthByLayer.set(l, Math.max(maxWidthByLayer.get(l) ?? 0, readNodeBoxPx(node).width))
+  }
+
+  const columnCenters: number[] = []
+  if (columns === 1) {
+    columnCenters.push(CANVAS_W / 2)
+  } else {
+    let cursor = EDGE_MARGIN + (maxWidthByLayer.get(0) ?? 120) / 2
+    columnCenters.push(cursor)
+    for (let l = 1; l < columns; l++) {
+      const prevHalf = (maxWidthByLayer.get(l - 1) ?? 120) / 2
+      const half = (maxWidthByLayer.get(l) ?? 120) / 2
+      cursor += prevHalf + half + LAYER_GAP
+      columnCenters.push(cursor)
+    }
+    const last = columnCenters[columnCenters.length - 1] ?? CANVAS_W / 2
+    const overflow = last + (maxWidthByLayer.get(columns - 1) ?? 120) / 2 + EDGE_MARGIN - CANVAS_W
+    if (overflow > 0) {
+      for (let i = 0; i < columnCenters.length; i++) columnCenters[i] = (columnCenters[i] ?? 0) - overflow / 2
+    }
+  }
 
   const items: LayoutNode[] = nodes.map((node) => {
     const box = readNodeBoxPx(node)
     const l = layer.get(node.id) ?? Math.max(0, node.depth)
-    const x =
-      columns === 1
-        ? CANVAS_W / 2
-        : EDGE_MARGIN + box.width / 2 + ((CANVAS_W - EDGE_MARGIN * 2 - box.width) * l) / Math.max(1, columns - 1)
     return {
       node,
       width: box.width,
       height: box.height,
-      x: clampCenter(x, box.width / 2, CANVAS_W),
+      x: clampCenter(columnCenters[l] ?? CANVAS_W / 2, box.width / 2, CANVAS_W),
       y: CANVAS_H / 2,
       layer: l,
       order: order.get(node.id) ?? node.id,

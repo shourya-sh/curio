@@ -2647,7 +2647,8 @@ textarea {
 
 .mm-canvas__viewport {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
   transform-origin: 0 0;
   will-change: transform;
 }
@@ -2742,16 +2743,24 @@ textarea {
 .mm-edge {
   fill: none;
   stroke: #8acfc6;
-  stroke-width: 2.4;
-  opacity: 0.86;
+  stroke-width: 3;
+  opacity: 0.95;
   transition: stroke 0.2s ease;
   pointer-events: none;
   filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.72));
 }
 
+.mm-edge-underlay {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.82);
+  stroke-width: 7;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
 .mm-edge--solid {
   stroke-dasharray: none;
-  stroke-width: 2.2;
+  stroke-width: 3;
 }
 
 .mm-edge--dashed {
@@ -2763,7 +2772,7 @@ textarea {
 }
 
 .mm-edge--bold {
-  stroke-width: 3.4;
+  stroke-width: 4.4;
 }
 
 .mm-edge--selected {
@@ -2789,8 +2798,9 @@ textarea {
   position: absolute;
   z-index: 2;
   box-sizing: border-box;
-  max-width: 46%;
-  max-height: 46%;
+  /* Size comes from inline % of canvas (MindMapCanvas); old viewport caps clipped tall/wide labels. */
+  max-width: none;
+  max-height: none;
   border-radius: 999px;
   padding: 0 18px;
   display: flex;
@@ -2863,13 +2873,17 @@ textarea {
   max-width: 100%;
   font-size: var(--mm-orb-font-size, 14px);
   font-weight: 800;
-  line-height: 1;
+  line-height: 1.08;
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
   letter-spacing: -0.015em;
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+  text-wrap: balance;
+  overflow-wrap: break-word;
+  word-break: normal;
+  min-height: calc(var(--mm-orb-lines, 1) * 1.08 * var(--mm-orb-font-size, 14px));
 }
 
 .mf-right-stack,

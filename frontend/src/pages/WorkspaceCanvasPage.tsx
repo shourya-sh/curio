@@ -569,6 +569,7 @@ export function WorkspaceCanvasPage() {
     void bulkUpdateNodes(session.id, { nodes: items })
       .then(() => {
         setErrorBanner(null)
+        setFitContentNonce((x) => x + 1)
         void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
       })
       .catch((e: Error) => {

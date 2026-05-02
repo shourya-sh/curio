@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from models.tables import NodeTable
 from services.agents.draft_models import GraphEdgeDraft, GraphNodeDraft
 
-CANVAS_W = 1200
-CANVAS_H = 720
+CANVAS_W = 3200
+CANVAS_H = 1800
 GRID_SNAP = 8
-NODE_MARGIN = 72
+NODE_MARGIN = 128
 # Match frontend DEFAULT_NODE_RADIUS (56) + comfortable gap between disk edges.
 NODE_DISK_RADIUS = 56
-MIN_CENTER_SEP = 2 * NODE_DISK_RADIUS + 32
+MIN_CENTER_SEP = 2 * NODE_DISK_RADIUS + 160
 
 
 @dataclass(frozen=True)
