@@ -1,10 +1,11 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { LinkOut, NodeOut } from '../../lib/api'
 import { CANVAS_H, CANVAS_W, snapCoord } from '../../lib/canvasConstants'
 import {
   DEFAULT_NODE_RADIUS,
   MAX_NODE_RADIUS,
   MIN_NODE_RADIUS,
+  readNodeBoxPx,
   readNodeRadiusPx,
 } from '../../lib/nodeDisplay'
 import { nodeOrbStyle } from '../../lib/nodeOrbStyle'
@@ -64,6 +65,10 @@ type Props = {
   pendingPosition?: Map<number, { x: number; y: number }>
   selectedLinkId?: number | null
   onSelectLink?: (linkId: number | null, pos?: { x: number; y: number }) => void
+  /** Increment to fit all nodes in view (after layout is restored in the parent). */
+  fitContentNonce?: number
+  /** Reset nodes to canonical positions, persist, then parent bumps `fitContentNonce`. */
+  onFitView?: () => void
 }
 
 export function MindMapCanvas({
@@ -80,16 +85,21 @@ export function MindMapCanvas({
   pendingPosition,
   selectedLinkId = null,
   onSelectLink,
+  fitContentNonce = 0,
+  onFitView,
 }: Props) {
   const boardRef = useRef<HTMLDivElement | null>(null)
   const hitRef = useRef<HTMLDivElement | null>(null)
   const spaceDownRef = useRef(false)
+  const handToolRef = useRef(false)
+  const [handTool, setHandTool] = useState(false)
   const [drag, setDrag] = useState<DragState | null>(null)
   const dragRef = useRef<DragState | null>(null)
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, scale: 1 })
   const [pan, setPan] = useState<PanState | null>(null)
   const [movePointer, setMovePointer] = useState<{ x: number; y: number } | null>(null)
   dragRef.current = drag
+  handToolRef.current = handTool
 
   const [placeDraft, setPlaceDraft] = useState<PlaceDraft | null>(null)
   const placeDraftRef = useRef<PlaceDraft | null>(null)
@@ -153,6 +163,92 @@ export function MindMapCanvas({
     setViewport({ x: 0, y: 0, scale: 1 })
   }, [])
 
+  const runFitBounds = useCallback(() => {
+    const el = boardRef.current
+    if (!el || nodes.length === 0) {
+      setViewport({ x: 0, y: 0, scale: 1 })
+      return
+    }
+    const rect = el.getBoundingClientRect()
+    const W = rect.width
+    const H = rect.height
+    if (W < 1 || H < 1) return
+
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const n of nodes) {
+      const p = pendingPosition?.get(n.id) ?? { x: n.position_x, y: n.position_y }
+      const r = readNodeRadiusPx(n)
+      minX = Math.min(minX, p.x - r)
+      maxX = Math.max(maxX, p.x + r)
+      minY = Math.min(minY, p.y - r)
+      maxY = Math.max(maxY, p.y + r)
+    }
+
+    const pad = 48
+    const minVx = (minX / CANVAS_W) * W
+    const maxVx = (maxX / CANVAS_W) * W
+    const minVy = (minY / CANVAS_H) * H
+    const maxVy = (maxY / CANVAS_H) * H
+    const cw = Math.max(maxVx - minVx, 1)
+    const ch = Math.max(maxVy - minVy, 1)
+    const scale = clampZoom(Math.min((W - 2 * pad) / cw, (H - 2 * pad) / ch))
+    const cx = (minVx + maxVx) / 2
+    const cy = (minVy + maxVy) / 2
+    setViewport({
+      scale,
+      x: W / 2 - cx * scale,
+      y: H / 2 - cy * scale,
+    })
+  }, [nodes, pendingPosition])
+
+  const lastFitNonceRef = useRef(0)
+  useLayoutEffect(() => {
+    if (fitContentNonce === 0) return
+    if (lastFitNonceRef.current === fitContentNonce) return
+    lastFitNonceRef.current = fitContentNonce
+    runFitBounds()
+  }, [fitContentNonce, runFitBounds])
+
+  const beginPan = useCallback(
+    (e: React.PointerEvent, captureTarget: Element | null) => {
+      e.preventDefault()
+      setPan({
+        pointerId: e.pointerId,
+        startClient: { x: e.clientX, y: e.clientY },
+        startViewport: viewport,
+      })
+      try {
+        ;(captureTarget ?? hitRef.current)?.setPointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
+    },
+    [viewport],
+  )
+
+  useEffect(() => {
+    if (connectMode || placeNodeMode) setHandTool(false)
+  }, [connectMode, placeNodeMode])
+
+  const handToolActive = handTool && !connectMode && !placeNodeMode
+
+  useEffect(() => {
+    if (!handToolActive) return
+    const onDocPointerDown = (e: PointerEvent) => {
+      const t = e.target as Element | null
+      if (!t) return
+      if (t.closest('.mm-viewport-controls__pan')) return
+      const board = boardRef.current
+      if (board?.contains(t) && !t.closest('.mm-viewport-controls')) return
+      setHandTool(false)
+    }
+    document.addEventListener('pointerdown', onDocPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onDocPointerDown, true)
+  }, [handToolActive])
+
   useEffect(() => {
     const isTyping = (target: EventTarget | null) => {
       const el = target as HTMLElement | null
@@ -175,7 +271,8 @@ export function MindMapCanvas({
         if (rect) zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, viewport.scale / 1.12)
         e.preventDefault()
       } else if (e.key === '0' || e.key === 'Home') {
-        resetView()
+        if (onFitView) onFitView()
+        else resetView()
         e.preventDefault()
       } else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         const step = e.shiftKey ? 80 : 32
@@ -196,7 +293,7 @@ export function MindMapCanvas({
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [resetView, viewport.scale, zoomAt])
+  }, [onFitView, resetView, viewport.scale, zoomAt])
 
   const nodeAtLogicalPoint = useCallback(
     (lx: number, ly: number, excludeId?: number): NodeOut | null => {
@@ -305,6 +402,10 @@ export function MindMapCanvas({
   const onPointerDownOrb = useCallback(
     (e: React.PointerEvent, n: NodeOut) => {
       e.stopPropagation()
+      if (handTool && !connectMode && !placeNodeMode && e.button === 0) {
+        beginPan(e, e.currentTarget)
+        return
+      }
       if (connectMode) {
         e.preventDefault()
         const l = clientToLogical(e.clientX, e.clientY)
@@ -334,24 +435,16 @@ export function MindMapCanvas({
       setMovePointer(l)
       setDrag({ id: n.id, startPointer: l, startNode: basePos(n) })
     },
-    [clientToLogical, connectMode, placeNodeMode, onSelect, basePos, posLive, onConnectWire],
+    [beginPan, clientToLogical, connectMode, handTool, placeNodeMode, onSelect, basePos, posLive, onConnectWire],
   )
 
   const onBackgroundPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if ((e.target as HTMLElement).closest('.mm-orb')) return
-      if (!placeNodeMode && (e.button === 1 || spaceDownRef.current)) {
-        e.preventDefault()
-        setPan({
-          pointerId: e.pointerId,
-          startClient: { x: e.clientX, y: e.clientY },
-          startViewport: viewport,
-        })
-        try {
-          hitRef.current?.setPointerCapture(e.pointerId)
-        } catch {
-          /* ignore */
-        }
+      const panWithPrimary =
+        !placeNodeMode && e.button === 0 && (spaceDownRef.current || handToolRef.current)
+      if (!placeNodeMode && (e.button === 1 || panWithPrimary)) {
+        beginPan(e, hitRef.current)
         return
       }
       if (placeNodeMode) {
@@ -368,7 +461,7 @@ export function MindMapCanvas({
         return
       }
     },
-    [clientToLogical, placeNodeMode, viewport],
+    [beginPan, clientToLogical, placeNodeMode],
   )
 
   const onBackgroundClick = useCallback(
@@ -442,7 +535,7 @@ export function MindMapCanvas({
   )
 
   const boardClass =
-    `mm-canvas-board${placeNodeMode ? ' mm-canvas-board--place' : ''}${connectMode ? ' mm-canvas-board--connect' : ''}${pan ? ' mm-canvas-board--panning' : ''}`.trim()
+    `mm-canvas-board${placeNodeMode ? ' mm-canvas-board--place' : ''}${connectMode ? ' mm-canvas-board--connect' : ''}${handToolActive ? ' mm-canvas-board--hand-tool' : ''}${pan ? ' mm-canvas-board--panning' : ''}`.trim()
 
   return (
     <div
@@ -500,6 +593,11 @@ export function MindMapCanvas({
                 strokeLinecap='round'
                 onPointerDown={(e) => {
                   if (connectMode) return
+                  if (handToolRef.current && e.button === 0) {
+                    e.stopPropagation()
+                    beginPan(e, e.currentTarget)
+                    return
+                  }
                   e.stopPropagation()
                   onSelectLink?.(link.id, mid)
                 }}
@@ -545,8 +643,9 @@ export function MindMapCanvas({
         const p = posLive(n)
         const orb = nodeOrbStyle(n.color)
         const isSel = selectedId === n.id
-        const rPx = readNodeRadiusPx(n)
-        const dPct = (2 * rPx) / CANVAS_W
+        const box = readNodeBoxPx(n)
+        const wPct = (box.width / CANVAS_W) * 100
+        const hPct = (box.height / CANVAS_H) * 100
         const left = `${(p.x / CANVAS_W) * 100}%`
         const top = `${(p.y / CANVAS_H) * 100}%`
         const wireFrom = connectMode && wireDraft?.fromId === n.id
@@ -562,11 +661,13 @@ export function MindMapCanvas({
             style={{
               left,
               top,
-              width: `${dPct * 100}%`,
-              height: 'auto',
-              aspectRatio: '1',
+              width: `${wPct}%`,
+              height: `${hPct}%`,
+              aspectRatio: box.manual ? '1' : 'auto',
               background: orb.background,
               color: orb.color,
+              borderRadius: box.manual ? '999px' : '999px',
+              ['--mm-orb-font-size' as string]: `${box.fontSize}px`,
               boxShadow: isSel
                 ? '0 0 0 3px rgba(20, 184, 166, 0.55), 0 12px 36px rgba(15, 23, 42, 0.12)'
                 : '0 8px 28px rgba(15, 23, 42, 0.1)',
@@ -592,6 +693,18 @@ export function MindMapCanvas({
         })}
       </div>
       <div className='mm-viewport-controls' aria-label='Canvas view controls'>
+        <button
+          type='button'
+          className={`mm-viewport-controls__pan${handToolActive ? ' mm-viewport-controls__pan--on' : ''}`}
+          aria-label={handToolActive ? 'Pan tool on — drag to move the canvas' : 'Pan tool — drag to move the canvas'}
+          aria-pressed={handToolActive}
+          title='Pan (drag the canvas)'
+          onClick={() => setHandTool((v) => !v)}
+        >
+          <svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden>
+            <path d='M14.5 4.5 12 2 9.5 4.5M12 2v6M14.5 19.5 12 22l-2.5-2.5M12 22v-6M4.5 9.5 2 12l2.5 2.5M2 12h6M19.5 9.5 22 12l-2.5 2.5M22 12h-6' />
+          </svg>
+        </button>
         <button type='button' onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, viewport.scale / 1.15)} aria-label='Zoom out'>
           −
         </button>
@@ -599,7 +712,11 @@ export function MindMapCanvas({
         <button type='button' onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, viewport.scale * 1.15)} aria-label='Zoom in'>
           +
         </button>
-        <button type='button' onClick={resetView} aria-label='Reset view'>
+        <button
+          type='button'
+          onClick={() => (onFitView ? onFitView() : resetView())}
+          aria-label={onFitView ? 'Fit view and restore canonical node positions' : 'Reset zoom and pan'}
+        >
           Fit
         </button>
       </div>

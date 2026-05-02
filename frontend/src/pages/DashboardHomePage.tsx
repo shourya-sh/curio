@@ -7,7 +7,8 @@ import { createNode, createSession, listSessions, type SessionListItem } from '.
 import { markSignedIn } from '../lib/auth'
 import { sessionListQueryKey } from '../lib/queryClient'
 import { formatSessionUpdatedAt } from '../lib/sessionDisplay'
-import { readRecentSessionIds, recordSessionOpened } from '../lib/sessionRecent'
+import { readRecentSessionRefs, recordSessionOpened } from '../lib/sessionRecent'
+import { workspacePathSegment } from '../lib/workspaceRouting'
 
 type HomeMode = 'research' | 'plan'
 
@@ -37,14 +38,15 @@ export function DashboardHomePage() {
       const session = await createSession({
         title: variables.title,
         mode: variables.mode,
+        slug_source: variables.prompt.trim() || undefined,
       })
-      await createNode(session.id, {
+      const centerNode = await createNode(workspacePathSegment(session), {
         topic: variables.prompt,
         summary:
           variables.mode === 'research' ? 'Initial research focus' : 'Initial planning focus',
         details: variables.prompt,
       })
-      return { session, variables }
+      return { session, variables, centerNodeId: centerNode.id }
     },
     onMutate: async (variables) => {
       await queryClient.cancelQueries({ queryKey: sessionListQueryKey })
@@ -54,6 +56,7 @@ export function DashboardHomePage() {
       const nowIso = new Date().toISOString()
       const optimisticSession: SessionListItem = {
         id: optimisticId,
+        slug: '',
         title: variables.title,
         mode: variables.mode,
         created_at: nowIso,
@@ -73,7 +76,7 @@ export function DashboardHomePage() {
         error instanceof Error ? error.message : 'Failed to create project session.'
       window.alert(message)
     },
-    onSuccess: ({ session, variables }, _submitted, context) => {
+    onSuccess: ({ session, variables, centerNodeId }, _submitted, context) => {
       queryClient.setQueryData<SessionListItem[]>(sessionListQueryKey, (current = []) => {
         const next = current.map((item) =>
           item.id === context?.optimisticId ? { ...item, ...session } : item,
@@ -84,13 +87,14 @@ export function DashboardHomePage() {
         return next
       })
 
-      localStorage.setItem('curio:lastSessionId', String(session.id))
-      recordSessionOpened(session.id)
-      navigate(`/workspace/${session.id}`, {
+      localStorage.setItem('curio:lastSessionId', session.slug)
+      recordSessionOpened(session.slug)
+      navigate(`/workspace/${session.slug}`, {
         state: {
           mode: variables.mode,
           title: variables.title,
           initialPrompt: variables.prompt,
+          centerNodeId,
         },
       })
       setShowNamingModal(false)
@@ -158,15 +162,14 @@ export function DashboardHomePage() {
   }, [showNamingModal])
 
   const recentProjectsToShow = useMemo(() => {
-    const recentIds = readRecentSessionIds()
-    const byId = new Map(sessions.map((s) => [s.id, s]))
+    const recentRefs = readRecentSessionRefs()
     const ordered: SessionListItem[] = []
     const seen = new Set<number>()
-    for (const id of recentIds) {
-      const row = byId.get(id)
-      if (row) {
+    for (const ref of recentRefs) {
+      const row = sessions.find((s) => s.slug === ref || String(s.id) === ref)
+      if (row && !seen.has(row.id)) {
         ordered.push(row)
-        seen.add(id)
+        seen.add(row.id)
       }
     }
     const rest = sessions
@@ -180,16 +183,20 @@ export function DashboardHomePage() {
     return [...ordered, ...rest].slice(0, 6)
   }, [sessions])
 
-  const topBarWorkspaceId = useMemo(() => {
-    const recentFirst = readRecentSessionIds()[0]
+  const topBarWorkspaceSegment = useMemo(() => {
+    const refs = readRecentSessionRefs()
     const stored = localStorage.getItem('curio:lastSessionId')
-    const storedNum = stored != null && !Number.isNaN(Number(stored)) ? Number(stored) : null
-    return recentFirst ?? storedNum
-  }, [])
+    const candidates = [...refs, ...(stored ? [stored] : [])]
+    for (const r of candidates) {
+      const row = sessions.find((s) => s.slug === r || String(s.id) === r)
+      if (row) return workspacePathSegment(row)
+    }
+    return sessions[0] ? workspacePathSegment(sessions[0]) : null
+  }, [sessions])
 
   return (
     <div className='app-shell'>
-      <AppTopBar activeItem='home' workspaceSessionId={topBarWorkspaceId} />
+      <AppTopBar activeItem='home' workspaceSessionId={topBarWorkspaceSegment} />
 
       <main className='workspace-grid-bg'>
         <DecorativePageBackground />
@@ -283,7 +290,7 @@ export function DashboardHomePage() {
             <div className='library-grid recent-projects-grid'>
               {recentProjectsToShow.map((project, index) => (
                 <article key={project.id} className='library-project-card'>
-                  <Link to={`/workspace/${project.id}`} className='project-card-link'>
+                  <Link to={`/workspace/${workspacePathSegment(project)}`} className='project-card-link'>
                     <div className='project-thumb'>
                       <span className={`project-mode-pill ${project.mode}`}>
                         {project.mode === 'plan' ? 'Plan mode' : 'Research mode'}

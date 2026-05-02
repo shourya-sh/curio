@@ -10,6 +10,8 @@ class NodeCreate(BaseModel):
     parent_id: Optional[int] = None
     position_x: float = 0
     position_y: float = 0
+    original_position_x: Optional[float] = None
+    original_position_y: Optional[float] = None
     node_type: str = "topic"
     color: Optional[str] = None
     subtopics: Optional[Any] = None
@@ -22,6 +24,8 @@ class NodeUpdate(BaseModel):
     details: Optional[str] = None
     position_x: Optional[float] = None
     position_y: Optional[float] = None
+    original_position_x: Optional[float] = None
+    original_position_y: Optional[float] = None
     node_type: Optional[str] = None
     color: Optional[str] = None
     subtopics: Optional[Any] = None
@@ -36,6 +40,8 @@ class NodeBulkItem(BaseModel):
     details: Optional[str] = None
     position_x: Optional[float] = None
     position_y: Optional[float] = None
+    original_position_x: Optional[float] = None
+    original_position_y: Optional[float] = None
     node_type: Optional[str] = None
     color: Optional[str] = None
     subtopics: Optional[Any] = None
@@ -55,6 +61,8 @@ class NodeRestoreItem(BaseModel):
     depth: int = 0
     position_x: float
     position_y: float
+    original_position_x: Optional[float] = None
+    original_position_y: Optional[float] = None
     node_type: str = "topic"
     color: Optional[str] = None
     created_at: Optional[datetime] = None

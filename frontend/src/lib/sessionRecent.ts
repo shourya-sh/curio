@@ -12,8 +12,8 @@ function parseStoredIds(raw: string | null): string[] {
   }
 }
 
-export function recordSessionOpened(sessionId: number | string): void {
-  const id = String(sessionId)
+export function recordSessionOpened(sessionKey: string | number): void {
+  const id = String(sessionKey)
   try {
     const existing = parseStoredIds(localStorage.getItem(STORAGE_KEY))
     const next = [id, ...existing.filter((x) => x !== id)].slice(0, MAX_RECENT)
@@ -23,21 +23,33 @@ export function recordSessionOpened(sessionId: number | string): void {
   }
 }
 
-export function readRecentSessionIds(): number[] {
+/** Recent workspace path segments (slug preferred; may include legacy numeric id strings). */
+export function readRecentSessionRefs(): string[] {
   try {
     return parseStoredIds(localStorage.getItem(STORAGE_KEY))
-      .map((s) => Number(s))
-      .filter((n) => Number.isFinite(n))
   } catch {
     return []
   }
 }
 
-export function removeSessionFromRecent(sessionId: number | string): void {
-  const id = String(sessionId)
+/** @deprecated Use readRecentSessionRefs and match by slug or id. */
+export function readRecentSessionIds(): number[] {
+  return readRecentSessionRefs()
+    .map((s) => Number(s))
+    .filter((n) => Number.isFinite(n))
+}
+
+export function removeSessionFromRecent(session: { id: number; slug?: string } | string | number): void {
+  const drop = new Set<string>()
+  if (typeof session === 'object' && session !== null && 'id' in session) {
+    drop.add(String(session.id))
+    if (session.slug) drop.add(session.slug)
+  } else {
+    drop.add(String(session))
+  }
   try {
     const existing = parseStoredIds(localStorage.getItem(STORAGE_KEY))
-    const next = existing.filter((x) => x !== id)
+    const next = existing.filter((x) => !drop.has(x))
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
   } catch {
     /* ignore */

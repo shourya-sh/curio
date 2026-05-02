@@ -6,6 +6,8 @@ from datetime import datetime
 class SessionCreate(BaseModel):
     title: str
     mode: str = "research"
+    # Optional (e.g. first prompt) when title slugifies to empty.
+    slug_source: Optional[str] = None
 
 class SessionUpdate(BaseModel):
     title: str
@@ -26,6 +28,8 @@ class NodeOut(BaseModel):
     depth: int
     position_x: float = 0
     position_y: float = 0
+    original_position_x: float = 0
+    original_position_y: float = 0
     node_type: str = "topic"
     color: Optional[str] = None
     created_at: datetime
@@ -61,6 +65,7 @@ class MessageOut(BaseModel):
 
 class SessionDetail(BaseModel):
     id: int
+    slug: str
     user_id: Optional[int] = None
     title: str
     mode: str

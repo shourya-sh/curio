@@ -1,7 +1,7 @@
 import json
 from starlette.requests import Request
 from sqlalchemy.orm import Session
-from models.tables import MessageTable, SessionTable
+from services import message_service
 from services.agents import research_agent, plan_agent
 from services.token_logging import log_prompt_token_usage
 from logger import get_logger
@@ -23,17 +23,13 @@ async def run_agent_stream(
 ):
     """Async generator that runs the appropriate agent and yields SSE events."""
     try:
-        yield sse_event("status", {"message": "Processing..."})
-
         # validate session
-        session = db.query(SessionTable).filter_by(id=session_id).first()
+        session = message_service.get_session_row(db, session_id)
         if not session:
             yield sse_event("error", {"message": f"Session {session_id} not found"})
             return
 
-        user_message = MessageTable(session_id=session_id, role="user", content=prompt)
-        db.add(user_message)
-        db.flush()
+        user_message = message_service.create_user_message(db, session_id, prompt)
         yield sse_event(
             "message_created",
             {
@@ -70,13 +66,12 @@ async def run_agent_stream(
 
             if event["type"] == "message_created":
                 data = event.get("data") or {}
-                message = MessageTable(
-                    session_id=session_id,
-                    role=data.get("role") or "system",
-                    content=data.get("content") or "",
+                message = message_service.create_message(
+                    db,
+                    session_id,
+                    data.get("role") or "system",
+                    data.get("content") or "",
                 )
-                db.add(message)
-                db.flush()
                 event = {
                     "type": "message_created",
                     "data": {
@@ -89,10 +84,7 @@ async def run_agent_stream(
                 }
             elif event["type"] == "sources_created":
                 data = event.get("data") or {}
-                payload = json.dumps(data)
-                message = MessageTable(session_id=session_id, role="sources", content=payload)
-                db.add(message)
-                db.flush()
+                message = message_service.create_sources_message(db, session_id, data)
                 event = {
                     "type": "sources_created",
                     "data": {

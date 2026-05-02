@@ -2,9 +2,9 @@
  * Map a single stored hex to landing-style gradient stops + readable ink, or defaults.
  */
 const DEFAULT = {
-  colorA: '#dff3ff',
-  colorB: '#b9d7ff',
-  ink: '#1e3a5f',
+  colorA: '#eff6ff',
+  colorB: '#bfdbfe',
+  ink: '#18365c',
 } as const
 
 function mixToWhite(hex: string, t: number): string {
@@ -32,13 +32,13 @@ function inkFromHex(hex: string): string {
 export function nodeOrbStyle(color: string | null | undefined): { background: string; color: string } {
   if (!color) {
     return {
-      background: `linear-gradient(150deg, ${DEFAULT.colorA} 0%, ${DEFAULT.colorB} 100%)`,
+      background: `linear-gradient(145deg, ${DEFAULT.colorA} 0%, #dbeafe 42%, ${DEFAULT.colorB} 100%)`,
       color: DEFAULT.ink,
     }
   }
   const c = color.startsWith('#') ? color : `#${color}`
   return {
-    background: `linear-gradient(155deg, ${mixToWhite(c, 0.45)} 0%, ${mixToWhite(c, 0.12)} 48%, ${c} 100%)`,
+    background: `linear-gradient(145deg, ${mixToWhite(c, 0.72)} 0%, ${mixToWhite(c, 0.38)} 48%, ${mixToWhite(c, 0.1)} 100%)`,
     color: inkFromHex(c),
   }
 }

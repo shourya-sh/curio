@@ -11,6 +11,20 @@ def touch_session(db: Session, session_id: str) -> None:
         row.updated_at = datetime.now(timezone.utc)
 
 
+def find_expansion_anchor(
+    db: Session,
+    session_id: str,
+    anchor_node_id: int | None,
+) -> NodeTable | None:
+    """Node to attach AI expansion to: explicit id, or the sole node in the session, or None."""
+    if anchor_node_id is not None:
+        return db.query(NodeTable).filter_by(id=anchor_node_id, session_id=session_id).first()
+    nodes = db.query(NodeTable).filter_by(session_id=session_id).order_by(NodeTable.id.asc()).all()
+    if len(nodes) == 1:
+        return nodes[0]
+    return None
+
+
 def create_node(
     db: Session,
     session_id: str,
@@ -20,6 +34,8 @@ def create_node(
     parent_id: str = None,
     position_x: float = 0,
     position_y: float = 0,
+    original_position_x: float | None = None,
+    original_position_y: float | None = None,
     node_type: str = "topic",
     color: str = None,
     subtopics=None,
@@ -30,6 +46,8 @@ def create_node(
     if resolved_depth is None and parent_id:
         parent = db.query(NodeTable).filter_by(id=parent_id, session_id=session_id).first()
         resolved_depth = (parent.depth + 1) if parent else 0
+    ox = float(original_position_x) if original_position_x is not None else float(position_x)
+    oy = float(original_position_y) if original_position_y is not None else float(position_y)
     node = NodeTable(
         session_id=session_id,
         topic=topic,
@@ -39,6 +57,8 @@ def create_node(
         depth=resolved_depth or 0,
         position_x=position_x,
         position_y=position_y,
+        original_position_x=ox,
+        original_position_y=oy,
         node_type=node_type,
         color=color,
     )
@@ -108,6 +128,7 @@ def create_link(
         line_style=line_style or "solid",
     )
     db.add(link)
+    db.flush()
     touch_session(db, session_id)
     return link
 

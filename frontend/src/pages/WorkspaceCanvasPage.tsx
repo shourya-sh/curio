@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useLocation, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
 import { NodeColorField } from '../components/workspace/NodeColorField'
 import { MindMapCanvas } from '../components/workspace/MindMapCanvas'
@@ -20,11 +20,14 @@ import {
   type LinkLineStyle,
   type LinkOut,
   type LinkUpdatePayload,
+  type NodeBulkItem,
   type NodeOut,
   type SessionDetail,
+  type MessageOut,
   type ResearchSource,
+  type SessionPromptEvent,
 } from '../lib/api'
-import { layoutStackedNodes } from '../lib/graphLayout'
+import { layoutReadableGraph } from '../lib/graphLayout'
 import { buildManualLinkPayload, buildManualNodePayload, buildNodeStylePatch } from '../lib/manualGraph'
 import { readNodeRadiusPx } from '../lib/nodeDisplay'
 import { nodeOrbStyle } from '../lib/nodeOrbStyle'
@@ -36,6 +39,29 @@ interface ChatMessage {
   role: 'user' | 'system'
   content: string
   timestamp: string
+}
+
+function formatChatTimestamp(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) {
+    return new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+  }
+  return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+}
+
+function chatRowsFromSessionMessages(messages: MessageOut[] | undefined): ChatMessage[] {
+  const list = messages ?? []
+  const sorted = [...list].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.id - b.id,
+  )
+  return sorted
+    .filter((m) => m.role === 'user' || m.role === 'system')
+    .map((m) => ({
+      id: `m-${m.id}`,
+      role: m.role === 'user' ? ('user' as const) : ('system' as const),
+      content: m.content,
+      timestamp: formatChatTimestamp(m.created_at),
+    }))
 }
 
 interface DeleteUndoEntry {
@@ -91,6 +117,30 @@ function addLinkDeterministic(session: SessionDetail, link: LinkOut): SessionDet
     return session
   }
   return { ...session, links: [...session.links, link].sort((a, b) => a.id - b.id) }
+}
+
+/** One home-screen auto prompt per session (Strict Mode double-mount; never cleared on React Query cache updates). */
+const workspaceHomeAutoPromptOnce = new Set<string>()
+
+type WorkspaceNavigateState = {
+  initialPrompt?: string
+  centerNodeId?: number
+  mode?: string
+  title?: string
+}
+
+function resolveHomeSeedAnchorId(
+  nodes: NodeOut[],
+  seed: string,
+  explicitId: number | undefined,
+): number | null {
+  if (explicitId != null && nodes.some((n) => n.id === explicitId)) {
+    return explicitId
+  }
+  const t = seed.trim()
+  if (nodes.length === 1) return nodes[0].id
+  const match = nodes.find((n) => n.topic.trim() === t)
+  return match?.id ?? null
 }
 
 function removeLinkDeterministic(session: SessionDetail, linkId: number): SessionDetail {
@@ -195,6 +245,22 @@ function parseSourcesFromSession(session: SessionDetail | undefined): ResearchSo
   }
 }
 
+function sourcesLinkedToNode(nodeId: number, sources: ResearchSource[]): ResearchSource[] {
+  return sources.filter((s) => (s.node_ids ?? []).includes(nodeId))
+}
+
+function sourceNodeLabel(
+  nodeId: number,
+  topicSnapshot: string | undefined,
+  session: SessionDetail | undefined,
+): string {
+  const live = session?.nodes.find((n) => n.id === nodeId)?.topic?.trim()
+  if (live) return live
+  const snap = topicSnapshot?.trim()
+  if (snap) return snap
+  return `Node #${nodeId}`
+}
+
 function orderedNodesForCatalog(session: SessionDetail): NodeOut[] {
   const byId = new Map(session.nodes.map((node) => [node.id, node]))
   const children = new Map<number, number[]>()
@@ -227,8 +293,12 @@ function orderedNodesForCatalog(session: SessionDetail): NodeOut[] {
 }
 
 export function WorkspaceCanvasPage() {
-  const { sessionId = '' } = useParams()
+  const { workspaceSlug = '' } = useParams()
   const location = useLocation()
+  const navigate = useNavigate()
+  const navigateState = (location.state as WorkspaceNavigateState | null) ?? null
+  const initialPrompt = navigateState?.initialPrompt ?? ''
+  const centerNodeIdFromNav = navigateState?.centerNodeId
   const queryClient = useQueryClient()
   const [chatInput, setChatInput] = useState('')
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
@@ -246,6 +316,7 @@ export function WorkspaceCanvasPage() {
   const [connectMode, setConnectMode] = useState(false)
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
   const [pendingPos, setPendingPos] = useState<Map<number, { x: number; y: number }>>(() => new Map())
+  const [fitContentNonce, setFitContentNonce] = useState(0)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteUndoEntry | null>(null)
@@ -254,7 +325,7 @@ export function WorkspaceCanvasPage() {
   const [renameDraft, setRenameDraft] = useState('')
   const [stylePopPlacement, setStylePopPlacement] = useState<'top' | 'bottom'>('top')
   const [stylePopPos, setStylePopPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
-  const layoutStateRef = useRef<{ sid: string; done: boolean }>({ sid: '', done: false })
+  const layoutStateRef = useRef<{ sid: string; signature: string }>({ sid: '', signature: '' })
   const syncChainRef = useRef<Promise<void>>(Promise.resolve())
   const historyRef = useRef<HistoryEntry[]>([])
   const historyIndexRef = useRef(-1)
@@ -264,15 +335,40 @@ export function WorkspaceCanvasPage() {
   const linkLocalStyleMigratedRef = useRef(false)
   const [linkPopSubmenu, setLinkPopSubmenu] = useState<'color' | 'style' | null>(null)
   const [linkPopPos, setLinkPopPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
+  const promptAbortRef = useRef<AbortController | null>(null)
+  const workspacePageMountedRef = useRef(true)
 
   useEffect(() => {
     markSignedIn()
   }, [])
 
+  useEffect(() => {
+    workspacePageMountedRef.current = true
+    return () => {
+      workspacePageMountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      promptAbortRef.current?.abort()
+      promptAbortRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    promptAbortRef.current?.abort()
+    promptAbortRef.current = null
+  }, [workspaceSlug])
+
+  useEffect(() => {
+    setFitContentNonce(0)
+  }, [workspaceSlug])
+
   const sessionQuery = useQuery<SessionDetail>({
-    queryKey: ['session', sessionId],
-    queryFn: () => getSession(sessionId),
-    enabled: sessionId.length > 0,
+    queryKey: ['session', workspaceSlug],
+    queryFn: () => getSession(workspaceSlug),
+    enabled: workspaceSlug.length > 0,
     placeholderData: (previous) => previous,
   })
   const session = sessionQuery.data
@@ -283,14 +379,28 @@ export function WorkspaceCanvasPage() {
         messages: sessionQuery.data.messages ?? [],
       }
     : null
-  const loading = sessionQuery.isPending && !session
-  const invalidateSession = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
-  }, [queryClient, sessionId])
 
   useEffect(() => {
-    if (!sessionId || !session || linkLocalStyleMigratedRef.current) return
-    const key = `curio:linkStyles:${sessionId}`
+    if (!session?.slug) return
+    if (workspaceSlug === session.slug) return
+    if (workspaceSlug === String(session.id)) {
+      navigate(`/workspace/${session.slug}`, { replace: true, state: location.state })
+    }
+  }, [session, workspaceSlug, navigate, location.state])
+
+  const sessionMessagesKey =
+    sessionQuery.data?.messages?.length ?
+      sessionQuery.data.messages.map((m) => `${m.id}:${m.created_at}`).join('|')
+    : `none:${sessionQuery.data?.id ?? workspaceSlug}`
+  const chatHydrationDep = `${sessionMessagesKey}:${sessionQuery.data ? 'loaded' : 'pending'}`
+  const loading = sessionQuery.isPending && !session
+  const invalidateSession = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
+  }, [queryClient, workspaceSlug])
+
+  useEffect(() => {
+    if (!workspaceSlug || !session || linkLocalStyleMigratedRef.current) return
+    const key = `curio:linkStyles:${workspaceSlug}`
     const raw = localStorage.getItem(key)
     if (!raw) {
       linkLocalStyleMigratedRef.current = true
@@ -322,11 +432,23 @@ export function WorkspaceCanvasPage() {
         invalidateSession()
       }
     })()
-  }, [session, sessionId, invalidateSession])
+  }, [session, workspaceSlug, invalidateSession])
 
   useEffect(() => {
     setSourcesList(parseSourcesFromSession(session ?? undefined))
   }, [session])
+
+  useEffect(() => {
+    if (!sessionQuery.data || !workspaceSlug) return
+    const fromDb = chatRowsFromSessionMessages(sessionQuery.data.messages)
+    const trimmedSeed = initialPrompt.trim()
+    if (fromDb.length === 0 && trimmedSeed) {
+      const now = formatChatTimestamp(new Date().toISOString())
+      setChatMessages([{ id: 'seed', role: 'user', content: trimmedSeed, timestamp: now }])
+      return
+    }
+    setChatMessages(fromDb)
+  }, [workspaceSlug, initialPrompt, chatHydrationDep])
 
   const canUndo = historyIndex >= 0
   const canRedo = historyIndex < history.length - 1
@@ -429,28 +551,31 @@ export function WorkspaceCanvasPage() {
   })
 
   useEffect(() => {
-    if (!sessionId || !session) return
+    if (!workspaceSlug || !session) return
     const st = layoutStateRef.current
-    if (st.sid !== sessionId) {
-      layoutStateRef.current = { sid: sessionId, done: false }
+    if (st.sid !== workspaceSlug) {
+      layoutStateRef.current = { sid: workspaceSlug, signature: '' }
     }
-    if (layoutStateRef.current.done) return
-    const items = layoutStackedNodes(session.nodes)
+    const signature = [
+      session.nodes.map((n) => `${n.id}:${n.topic}:${n.depth}:${n.position_x}:${n.position_y}:${n.original_position_x ?? ''}:${n.original_position_y ?? ''}`).join('|'),
+      session.links.map((l) => `${l.parent_id}>${l.child_id}`).join('|'),
+    ].join('::')
+    if (layoutStateRef.current.signature === signature) return
+    layoutStateRef.current.signature = signature
+    const items = layoutReadableGraph(session.nodes, session.links)
     if (items.length === 0) {
-      layoutStateRef.current.done = true
       return
     }
-    layoutStateRef.current.done = true
-    void bulkUpdateNodes(Number(sessionId), { nodes: items })
+    void bulkUpdateNodes(session.id, { nodes: items })
       .then(() => {
         setErrorBanner(null)
-        void queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+        void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
       })
       .catch((e: Error) => {
         setErrorBanner(e.message)
-        layoutStateRef.current.done = false
+        layoutStateRef.current.signature = ''
       })
-  }, [sessionId, session, queryClient])
+  }, [workspaceSlug, session, queryClient])
 
   useEffect(() => {
     if (sessionQuery.error) {
@@ -462,8 +587,8 @@ export function WorkspaceCanvasPage() {
       return
     }
     if (!session) return
-    localStorage.setItem('curio:lastSessionId', String(session.id))
-    recordSessionOpened(session.id)
+    localStorage.setItem('curio:lastSessionId', session.slug)
+    recordSessionOpened(session.slug)
   }, [session, sessionQuery.error])
 
   useEffect(() => {
@@ -486,7 +611,7 @@ export function WorkspaceCanvasPage() {
         const entry = historyRef.current[currentIndex]
         if (!entry) return
         e.preventDefault()
-        queryClient.setQueryData<SessionDetail>(['session', sessionId], cloneSession(entry.before))
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], cloneSession(entry.before))
         entry.localBackward?.()
         const nextIndex = currentIndex - 1
         historyIndexRef.current = nextIndex
@@ -497,7 +622,7 @@ export function WorkspaceCanvasPage() {
         const entry = historyRef.current[nextIndex]
         if (!entry) return
         e.preventDefault()
-        queryClient.setQueryData<SessionDetail>(['session', sessionId], cloneSession(entry.after))
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], cloneSession(entry.after))
         entry.localForward?.()
         historyIndexRef.current = nextIndex
         setHistoryIndex(nextIndex)
@@ -508,7 +633,7 @@ export function WorkspaceCanvasPage() {
     return () => {
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [enqueueHistorySync, queryClient, session, sessionId])
+  }, [enqueueHistorySync, queryClient, session, workspaceSlug])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -536,6 +661,9 @@ export function WorkspaceCanvasPage() {
         e.preventDefault()
         return
       }
+      const hadOverlay =
+        connectMode || placeNodeMode || linkPopSubmenu != null || selectedLinkId != null
+      if (!hadOverlay) return
       e.preventDefault()
       if (connectMode) setConnectMode(false)
       if (placeNodeMode) setPlaceNodeMode(false)
@@ -544,7 +672,7 @@ export function WorkspaceCanvasPage() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [connectMode, deleteConfirm, linkDeleteConfirm, placeNodeMode, renamingNodeId])
+  }, [connectMode, deleteConfirm, linkPopSubmenu, linkDeleteConfirm, placeNodeMode, renamingNodeId, selectedLinkId])
 
   const onSelect = useCallback((id: number | null) => {
     setSelectedId(id)
@@ -575,7 +703,7 @@ export function WorkspaceCanvasPage() {
   const applyTrackedNodePatch = useCallback(
     (nodeId: number, patch: Parameters<typeof updateNode>[2]) => {
       if (!session) return
-      const current = queryClient.getQueryData<SessionDetail>(['session', sessionId])
+      const current = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
       if (!current) return
       const target = current.nodes.find((item) => item.id === nodeId)
       if (!target) return
@@ -586,7 +714,7 @@ export function WorkspaceCanvasPage() {
       })
       const before = cloneSession(current)
       const after = applyNodePatchDeterministic(before, nodeId, patch as Partial<NodeOut>)
-      queryClient.setQueryData<SessionDetail>(['session', sessionId], after)
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], after)
       const sid = Number(session.id)
       const entry: HistoryEntry = {
         before,
@@ -596,13 +724,13 @@ export function WorkspaceCanvasPage() {
       }
       commitHistoryEntry(entry)
     },
-    [commitHistoryEntry, mutUpdateNode, queryClient, session, sessionId],
+    [commitHistoryEntry, mutUpdateNode, queryClient, session, workspaceSlug],
   )
 
   const applyTrackedLinkPatch = useCallback(
     (linkId: number, patch: LinkUpdatePayload) => {
       if (!session) return
-      const current = queryClient.getQueryData<SessionDetail>(['session', sessionId])
+      const current = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
       if (!current) return
       const target = current.links.find((item) => item.id === linkId)
       if (!target) return
@@ -619,7 +747,7 @@ export function WorkspaceCanvasPage() {
       })
       const before = cloneSession(current)
       const after = applyLinkPatchDeterministic(before, linkId, patch as Partial<LinkOut>)
-      queryClient.setQueryData<SessionDetail>(['session', sessionId], after)
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], after)
       const sid = Number(session.id)
       commitHistoryEntry({
         before,
@@ -628,7 +756,7 @@ export function WorkspaceCanvasPage() {
         syncBackward: () => mutUpdateLink.mutateAsync({ sid, id: linkId, patch: beforePatch }),
       })
     },
-    [commitHistoryEntry, mutUpdateLink, queryClient, session, sessionId],
+    [commitHistoryEntry, mutUpdateLink, queryClient, session, workspaceSlug],
   )
 
   const onDragEnd = useCallback(
@@ -651,13 +779,49 @@ export function WorkspaceCanvasPage() {
     [applyTrackedNodePatch, session?.nodes],
   )
 
+  const handleFitView = useCallback(() => {
+    if (!session) return
+    const sid = Number(session.id)
+    const before = cloneSession(session)
+    const after: SessionDetail = {
+      ...session,
+      nodes: session.nodes.map((n) => {
+        const ox = n.original_position_x ?? n.position_x
+        const oy = n.original_position_y ?? n.position_y
+        if (Math.abs(n.position_x - ox) < 0.01 && Math.abs(n.position_y - oy) < 0.01) return n
+        return { ...n, position_x: ox, position_y: oy }
+      }),
+    }
+    const forwardItems: NodeBulkItem[] = before.nodes.flatMap((n) => {
+      const t = after.nodes.find((x) => x.id === n.id)
+      if (!t) return []
+      if (Math.abs(n.position_x - t.position_x) < 0.01 && Math.abs(n.position_y - t.position_y) < 0.01) return []
+      return [{ id: n.id, position_x: t.position_x, position_y: t.position_y }]
+    })
+    if (forwardItems.length > 0) {
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], after)
+      setPendingPos(new Map())
+      const backwardItems: NodeBulkItem[] = forwardItems.map((f) => {
+        const o = before.nodes.find((x) => x.id === f.id)!
+        return { id: o.id, position_x: o.position_x, position_y: o.position_y }
+      })
+      commitHistoryEntry({
+        before,
+        after,
+        syncForward: () => bulkUpdateNodes(sid, { nodes: forwardItems }),
+        syncBackward: () => bulkUpdateNodes(sid, { nodes: backwardItems }),
+      })
+    }
+    setFitContentNonce((x) => x + 1)
+  }, [session, workspaceSlug, queryClient, commitHistoryEntry])
+
   const onConnectWire = useCallback(
     (fromId: number, toId: number) => {
       if (!session) return
       setSelectedLinkId(null)
       const payload = buildManualLinkPayload(fromId, toId)
       if (!payload) return
-      const before = queryClient.getQueryData<SessionDetail>(['session', sessionId])
+      const before = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
       if (!before) return
       const sid = Number(session.id)
       void mutLink
@@ -665,7 +829,7 @@ export function WorkspaceCanvasPage() {
         .then((createdLink) => {
           const beforeSnapshot = cloneSession(before)
           const afterSnapshot = addLinkDeterministic(beforeSnapshot, createdLink)
-          queryClient.setQueryData<SessionDetail>(['session', sessionId], afterSnapshot)
+          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], afterSnapshot)
           setConnectMode(false)
           commitHistoryEntry({
             before: beforeSnapshot,
@@ -679,7 +843,7 @@ export function WorkspaceCanvasPage() {
           invalidateSession()
         })
     },
-    [commitHistoryEntry, invalidateSession, mutLink, queryClient, session, sessionId],
+    [commitHistoryEntry, invalidateSession, mutLink, queryClient, session, workspaceSlug],
   )
 
   const onPlaceNodeComplete = useCallback(
@@ -691,14 +855,14 @@ export function WorkspaceCanvasPage() {
         centerY: cy,
         radiusPx,
       })
-      const before = queryClient.getQueryData<SessionDetail>(['session', sessionId])
+      const before = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
       if (!before) return
       void mutCreateNode
         .mutateAsync({ sid: Number(session.id), body })
         .then((createdNode) => {
           const beforeSnapshot = cloneSession(before)
           const afterSnapshot = addNodeDeterministic(beforeSnapshot, createdNode)
-          queryClient.setQueryData<SessionDetail>(['session', sessionId], afterSnapshot)
+          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], afterSnapshot)
           commitHistoryEntry({
             before: beforeSnapshot,
             after: afterSnapshot,
@@ -711,93 +875,129 @@ export function WorkspaceCanvasPage() {
           invalidateSession()
         })
     },
-    [commitHistoryEntry, invalidateSession, mutCreateNode, queryClient, session, sessionId],
+    [commitHistoryEntry, invalidateSession, mutCreateNode, queryClient, session, workspaceSlug],
   )
 
-  const initialPrompt: string = location.state?.initialPrompt ?? ''
+  const consumePromptStreamEvent = useCallback(
+    (event: SessionPromptEvent) => {
+      if (event.type === 'status') {
+        return
+      }
+      if (event.type === 'done') {
+        return
+      }
+      if (event.type === 'node_created') {
+        const node = event.data as NodeOut
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+          current ? addNodeDeterministic(current, node) : current,
+        )
+        return
+      }
+      if (event.type === 'link_created') {
+        const link = event.data as LinkOut
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+          current ? addLinkDeterministic(current, link) : current,
+        )
+        return
+      }
+      if (event.type === 'message_created') {
+        const message = event.data as { role?: string; content?: string; id?: number; created_at?: string }
+        if (!message.content || message.role === 'user') return
+        const ts = message.created_at
+          ? formatChatTimestamp(message.created_at)
+          : formatChatTimestamp(new Date().toISOString())
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: message.id ? `m-${message.id}` : `m-${Date.now()}`,
+            role: message.role === 'user' ? 'user' : 'system',
+            content: message.content ?? '',
+            timestamp: ts,
+          },
+        ])
+        return
+      }
+      if (event.type === 'sources_created') {
+        const data = event.data as { sources?: ResearchSource[] }
+        setSourcesList(data.sources ?? [])
+        return
+      }
+      if (event.type === 'error') {
+        const msg = (event.data as { message?: string }).message ?? 'AI request failed.'
+        setErrorBanner(msg)
+      }
+    },
+    [queryClient, workspaceSlug],
+  )
+
+  const runSessionPrompt = useCallback(
+    async (prompt: string, anchorNodeId: number | null) => {
+      if (!workspaceSlug || !session) return
+      setStreaming(true)
+      setErrorBanner(null)
+      promptAbortRef.current?.abort()
+      const ac = new AbortController()
+      promptAbortRef.current = ac
+      try {
+        await postSessionPromptStream(
+          session.id,
+          { prompt, anchor_node_id: anchorNodeId },
+          consumePromptStreamEvent,
+          { signal: ac.signal },
+        )
+        invalidateSession()
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        const message = error instanceof Error ? error.message : 'AI request failed.'
+        if (workspacePageMountedRef.current) setErrorBanner(message)
+        throw error
+      } finally {
+        if (promptAbortRef.current === ac) {
+          promptAbortRef.current = null
+          if (workspacePageMountedRef.current) setStreaming(false)
+        }
+      }
+    },
+    [workspaceSlug, session, consumePromptStreamEvent, invalidateSession],
+  )
 
   useEffect(() => {
-    if (!session || !initialPrompt) return
-    setChatMessages((prev) => {
-      if (prev.some((m) => m.id === 'seed')) return prev
-      return [
-        { id: 'seed', role: 'user' as const, content: initialPrompt, timestamp: new Date().toLocaleTimeString() },
-        {
-          id: 'seed2',
-          role: 'system' as const,
-          content: 'Ready to build this map with AI. Send a prompt or select a node to expand from there.',
-          timestamp: new Date().toLocaleTimeString(),
-        },
-      ]
+    if (!workspaceSlug || !sessionQuery.isSuccess) return
+    const trimmedSeed = initialPrompt.trim()
+    if (!trimmedSeed) return
+
+    const data = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
+    if (!data || (data.messages?.length ?? 0) > 0) return
+
+    const anchorId = resolveHomeSeedAnchorId(data.nodes, trimmedSeed, centerNodeIdFromNav)
+    if (anchorId == null) return
+    const onceKey = String(data.id)
+    if (workspaceHomeAutoPromptOnce.has(onceKey)) return
+    workspaceHomeAutoPromptOnce.add(onceKey)
+
+    setSelectedId(anchorId)
+    void runSessionPrompt(trimmedSeed, anchorId).catch(() => {
+      workspaceHomeAutoPromptOnce.delete(onceKey)
     })
-  }, [session, initialPrompt])
+  }, [centerNodeIdFromNav, initialPrompt, queryClient, runSessionPrompt, workspaceSlug, sessionQuery.isSuccess])
 
   const sendChat = async () => {
     const prompt = chatInput.trim()
     if (!prompt || !session || streaming) return
     setChatInput('')
-    setStreaming(true)
-    setErrorBanner(null)
     setChatMessages((prev) => [
       ...prev,
-      { id: `u-${Date.now()}`, role: 'user' as const, content: prompt, timestamp: new Date().toLocaleTimeString() },
+      {
+        id: `u-${Date.now()}`,
+        role: 'user' as const,
+        content: prompt,
+        timestamp: formatChatTimestamp(new Date().toISOString()),
+      },
     ])
     try {
-      await postSessionPromptStream(Number(session.id), { prompt, anchor_node_id: selectedId }, (event) => {
-        if (event.type === 'status') {
-          const message = (event.data as { message?: string }).message
-          if (message) {
-            setChatMessages((prev) => [
-              ...prev,
-              { id: `s-${Date.now()}-${prev.length}`, role: 'system', content: message, timestamp: new Date().toLocaleTimeString() },
-            ])
-          }
-          return
-        }
-        if (event.type === 'node_created') {
-          const node = event.data as NodeOut
-          queryClient.setQueryData<SessionDetail>(['session', sessionId], (current) =>
-            current ? addNodeDeterministic(current, node) : current,
-          )
-          return
-        }
-        if (event.type === 'link_created') {
-          const link = event.data as LinkOut
-          queryClient.setQueryData<SessionDetail>(['session', sessionId], (current) =>
-            current ? addLinkDeterministic(current, link) : current,
-          )
-          return
-        }
-        if (event.type === 'message_created') {
-          const message = event.data as { role?: string; content?: string; id?: number }
-          if (!message.content || message.role === 'user') return
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: message.id ? `m-${message.id}` : `m-${Date.now()}`,
-              role: message.role === 'user' ? 'user' : 'system',
-              content: message.content ?? '',
-              timestamp: new Date().toLocaleTimeString(),
-            },
-          ])
-          return
-        }
-        if (event.type === 'sources_created') {
-          const data = event.data as { sources?: ResearchSource[] }
-          setSourcesList(data.sources ?? [])
-          return
-        }
-        if (event.type === 'error') {
-          const message = (event.data as { message?: string }).message ?? 'AI request failed.'
-          setErrorBanner(message)
-        }
-      })
-      invalidateSession()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI request failed.'
-      setErrorBanner(message)
-    } finally {
-      setStreaming(false)
+      await runSessionPrompt(prompt, selectedId)
+    } catch {
+      /* error banner set in runSessionPrompt */
     }
   }
 
@@ -821,6 +1021,7 @@ export function WorkspaceCanvasPage() {
   const catalogNodes = session ? orderedNodesForCatalog(session) : []
   const panelNode = session?.nodes.find((node) => node.id === (panelNodeId ?? selectedId)) ?? null
   const panelSubtopics = renderSubtopics(panelNode?.subtopics)
+  const panelNodeSources = session && panelNode ? sourcesLinkedToNode(panelNode.id, sourcesList) : []
   const contextLinks = session && panelNode
     ? session.links
         .filter((link) => link.parent_id === panelNode.id || link.child_id === panelNode.id)
@@ -944,11 +1145,11 @@ export function WorkspaceCanvasPage() {
 
   const confirmDelete = () => {
     if (!session || !deleteConfirm) return
-    const current = queryClient.getQueryData<SessionDetail>(['session', sessionId])
+    const current = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
     if (!current) return
     const before = cloneSession(current)
     const after = removeNodeDeterministic(before, deleteConfirm.node.id)
-    queryClient.setQueryData<SessionDetail>(['session', sessionId], after)
+    queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], after)
     setSelectedId((value) => (value === deleteConfirm.node.id ? null : value))
     setHoveredId((value) => (value === deleteConfirm.node.id ? null : value))
     const entry: HistoryEntry = {
@@ -965,7 +1166,7 @@ export function WorkspaceCanvasPage() {
     const currentIndex = historyIndexRef.current
     const entry = historyRef.current[currentIndex]
     if (!entry) return
-    queryClient.setQueryData<SessionDetail>(['session', sessionId], cloneSession(entry.before))
+    queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], cloneSession(entry.before))
     entry.localBackward?.()
     const nextIndex = currentIndex - 1
     historyIndexRef.current = nextIndex
@@ -977,7 +1178,7 @@ export function WorkspaceCanvasPage() {
     const nextIndex = historyIndexRef.current + 1
     const entry = historyRef.current[nextIndex]
     if (!entry) return
-    queryClient.setQueryData<SessionDetail>(['session', sessionId], cloneSession(entry.after))
+    queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], cloneSession(entry.after))
     entry.localForward?.()
     historyIndexRef.current = nextIndex
     setHistoryIndex(nextIndex)
@@ -1021,9 +1222,19 @@ export function WorkspaceCanvasPage() {
     setRightPanelMode('nodes')
   }, [])
 
+  const closeInspectorPanel = useCallback(() => {
+    setRightPanelMode('none')
+  }, [])
+
+  const closeManualFlyout = useCallback(() => {
+    setManualOpen(false)
+    setPlaceNodeMode(false)
+    setConnectMode(false)
+  }, [])
+
   const confirmDeleteLink = useCallback(() => {
     if (!session || !linkDeleteConfirm) return
-    const current = queryClient.getQueryData<SessionDetail>(['session', sessionId])
+    const current = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
     if (!current) return
     const link = current.links.find((l) => l.id === linkDeleteConfirm.id)
     if (!link) {
@@ -1033,7 +1244,7 @@ export function WorkspaceCanvasPage() {
     }
     const before = cloneSession(current)
     const after = removeLinkDeterministic(before, link.id)
-    queryClient.setQueryData<SessionDetail>(['session', sessionId], after)
+    queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], after)
     setSelectedLinkId(null)
     setLinkPopSubmenu(null)
     commitHistoryEntry({
@@ -1043,7 +1254,7 @@ export function WorkspaceCanvasPage() {
       syncBackward: () => restoreLink(Number(session.id), link),
     })
     setLinkDeleteConfirm(null)
-  }, [commitHistoryEntry, linkDeleteConfirm, queryClient, session, sessionId])
+  }, [commitHistoryEntry, linkDeleteConfirm, queryClient, session, workspaceSlug])
 
   useEffect(() => {
     if (!session || (selectedId == null && selectedLinkId == null)) return
@@ -1078,7 +1289,7 @@ export function WorkspaceCanvasPage() {
 
   return (
     <div className='mindforge-shell'>
-      <AppTopBar activeItem='workspace' workspaceSessionId={sessionId} />
+      <AppTopBar activeItem='workspace' workspaceSessionId={session?.slug ?? workspaceSlug} />
 
       {errorBanner ? (
         <div className='ws-error-banner' role='alert'>
@@ -1092,6 +1303,16 @@ export function WorkspaceCanvasPage() {
       <main className={mainClassName} onClickCapture={closeManualIfClickedAway}>
         <div className='mf-rail-column'>
           <div className={`mf-manual-flyout${manualOpen ? ' is-open' : ''}`} aria-hidden={!manualOpen}>
+            <button
+              type='button'
+              className='mf-flyout-close'
+              title='Close manual tools'
+              aria-label='Close manual tools'
+              disabled={!manualOpen}
+              onClick={closeManualFlyout}
+            >
+              ×
+            </button>
             <button
               type='button'
               className={`mf-fly-btn${placeNodeMode ? ' active' : ''}`}
@@ -1236,6 +1457,8 @@ export function WorkspaceCanvasPage() {
                 onConnectWire={onConnectWire}
                 onPlaceNodeComplete={onPlaceNodeComplete}
                 pendingPosition={pendingPos}
+                fitContentNonce={fitContentNonce}
+                onFitView={handleFitView}
               />
               {focusedNode ? (
                 <div
@@ -1379,9 +1602,19 @@ export function WorkspaceCanvasPage() {
         <aside className='mf-chat' aria-label='Inspector'>
           {rightPanelMode === 'ai' ? (
             <div className='mf-right-stack'>
-              <div className='mf-chat-header'>
-                <h2>Assistant</h2>
-                <span>{streaming ? 'Thinking…' : 'Gemini'} · {session?.mode === 'plan' ? 'Plan' : 'Research'}</span>
+              <div className='mf-chat-header mf-panel-header-row'>
+                <div className='mf-panel-header-row__main'>
+                  <h2>Assistant</h2>
+                  <span>{streaming ? 'Thinking…' : session?.mode === 'plan' ? 'Plan' : 'Research'}</span>
+                </div>
+                <button
+                  type='button'
+                  className='mf-panel-close'
+                  onClick={closeInspectorPanel}
+                  aria-label='Close panel'
+                >
+                  ×
+                </button>
               </div>
               <div className='mf-chat-stream'>
                 {chatMessages.map((message) => (
@@ -1409,10 +1642,20 @@ export function WorkspaceCanvasPage() {
             <div className='mf-right-stack'>
               {nodesPanelView === 'catalog' ? (
                 <>
-                  <div className='mf-chat-header mf-node-panel-header'>
-                    <p className='mf-detail-kicker'>{session?.mode === 'plan' ? 'Planning' : 'Research'}</p>
-                    <h2>{copy.catalogTitle}</h2>
-                    <span>{copy.catalogSubtitle}</span>
+                  <div className='mf-chat-header mf-node-panel-header mf-panel-header-row'>
+                    <div className='mf-panel-header-row__main'>
+                      <p className='mf-detail-kicker'>{session?.mode === 'plan' ? 'Planning' : 'Research'}</p>
+                      <h2>{copy.catalogTitle}</h2>
+                      <span>{copy.catalogSubtitle}</span>
+                    </div>
+                    <button
+                      type='button'
+                      className='mf-panel-close'
+                      onClick={closeInspectorPanel}
+                      aria-label='Close panel'
+                    >
+                      ×
+                    </button>
                   </div>
                   <div className='mf-node-catalog'>
                     {catalogNodes.length === 0 ? (
@@ -1447,9 +1690,19 @@ export function WorkspaceCanvasPage() {
               ) : (
                 <div className='mf-detail-body'>
                   <div className='mf-detail-sticky-header'>
-                    <button type='button' className='mf-detail-back' onClick={() => setNodesPanelView('catalog')}>
-                      ← Back to nodes
-                    </button>
+                    <div className='mf-detail-header-actions'>
+                      <button type='button' className='mf-detail-back' onClick={() => setNodesPanelView('catalog')}>
+                        ← Back to nodes
+                      </button>
+                      <button
+                        type='button'
+                        className='mf-panel-close'
+                        onClick={closeInspectorPanel}
+                        aria-label='Close panel'
+                      >
+                        ×
+                      </button>
+                    </div>
                     <p className='mf-detail-kicker'>{copy.detailKicker}</p>
                     <h2 className='mf-detail-title'>{panelNode?.topic || 'Select a node'}</h2>
                     {panelNode ? <span className='mf-node-depth-pill'>Depth {panelNode.depth}</span> : null}
@@ -1475,6 +1728,37 @@ export function WorkspaceCanvasPage() {
                             </ul>
                           ) : (
                             <p className='mf-muted'>No structured notes yet.</p>
+                          )}
+                        </section>
+                        <section className='mf-detail-block'>
+                          <h3>Sources</h3>
+                          {panelNodeSources.length ? (
+                            <ul className='mf-node-sources-list'>
+                              {panelNodeSources.map((src, idx) => (
+                                <li key={`${src.title}-${idx}`}>
+                                  <span className='mf-node-sources-list__title'>{src.title}</span>
+                                  {src.url ? (
+                                    <a
+                                      className='mf-node-sources-list__link'
+                                      href={src.url}
+                                      target='_blank'
+                                      rel='noreferrer noopener'
+                                    >
+                                      Open link
+                                    </a>
+                                  ) : null}
+                                  {src.summary ? (
+                                    <p className='mf-node-sources-list__summary'>{src.summary}</p>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className='mf-muted'>
+                              {session?.mode === 'plan'
+                                ? 'No references are linked to this plan item yet. Run the assistant to attach documents to specific nodes.'
+                                : 'No references are linked to this node yet. After an AI run, sources appear here when they cite this topic.'}
+                            </p>
                           )}
                         </section>
                         <section className='mf-detail-block'>
@@ -1508,10 +1792,22 @@ export function WorkspaceCanvasPage() {
           ) : null}
           {rightPanelMode === 'sources' ? (
             <div className='mf-right-stack'>
-              <div className='mf-chat-header mf-node-panel-header'>
-                <p className='mf-detail-kicker'>{session?.mode === 'plan' ? 'Planning' : 'Research'}</p>
-                <h2>Sources</h2>
-                <span>References the assistant used to structure this map.</span>
+              <div className='mf-chat-header mf-node-panel-header mf-panel-header-row'>
+                <div className='mf-panel-header-row__main'>
+                  <p className='mf-detail-kicker'>{session?.mode === 'plan' ? 'Planning' : 'Research'}</p>
+                  <h2>Sources</h2>
+                  <span>
+                    Each entry is tied to one or more nodes on the map. Use the chips to jump to that part of the graph.
+                  </span>
+                </div>
+                <button
+                  type='button'
+                  className='mf-panel-close'
+                  onClick={closeInspectorPanel}
+                  aria-label='Close panel'
+                >
+                  ×
+                </button>
               </div>
               <div className='mf-sources-scroll'>
                 {sourcesList.length === 0 ? (
@@ -1519,34 +1815,60 @@ export function WorkspaceCanvasPage() {
                     <p className='mf-right-empty__title'>No sources yet</p>
                     <h2>Run the AI on a research prompt</h2>
                     <p className='mf-right-empty__copy'>
-                      After you send a prompt, detailed citations with summaries, excerpts, and relevance notes appear
-                      here.
+                      After you send a prompt, citations with node-level links, summaries, excerpts, and relevance notes
+                      appear here.
                     </p>
                   </div>
                 ) : (
-                  sourcesList.map((src, idx) => (
-                    <article key={`${src.title}-${idx}`} className='mf-source-card'>
-                      <h3>{src.title}</h3>
-                      <p className='mf-source-meta'>
-                        {[src.publisher, src.year].filter(Boolean).join(' · ')}
-                        {src.url ? (
-                          <>
-                            <br />
-                            <a href={src.url} target='_blank' rel='noreferrer noopener'>
-                              {src.url}
-                            </a>
-                          </>
-                        ) : null}
-                      </p>
-                      {src.summary ? <p className='mf-source-body'>{src.summary}</p> : null}
-                      {src.excerpt ? <p className='mf-source-excerpt'>{src.excerpt}</p> : null}
-                      {src.relevance ? (
-                        <p className='mf-detail-hint'>
-                          <strong>Relevance:</strong> {src.relevance}
+                  sourcesList.map((src, idx) => {
+                    const ids = src.node_ids ?? []
+                    const topics = src.node_topics ?? []
+                    return (
+                      <article key={`${src.title}-${idx}`} className='mf-source-card'>
+                        <h3>{src.title}</h3>
+                        {ids.length ? (
+                          <div className='mf-source-nodes' role='group' aria-label='Nodes this source supports'>
+                            <span className='mf-source-nodes__label'>For nodes</span>
+                            <div className='mf-source-nodes__chips'>
+                              {ids.map((nodeId, i) => (
+                                <button
+                                  key={`${nodeId}-${i}`}
+                                  type='button'
+                                  className='mf-source-node-chip'
+                                  onClick={() => openNodeDetail(nodeId)}
+                                >
+                                  {sourceNodeLabel(nodeId, topics[i], session ?? undefined)}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className='mf-source-nodes mf-source-nodes--legacy'>
+                            <span className='mf-source-nodes__label'>Nodes</span>
+                            <span className='mf-muted'>Not linked to specific nodes (older session).</span>
+                          </p>
+                        )}
+                        <p className='mf-source-meta'>
+                          {[src.publisher, src.year].filter(Boolean).join(' · ')}
+                          {src.url ? (
+                            <>
+                              <br />
+                              <a href={src.url} target='_blank' rel='noreferrer noopener'>
+                                {src.url}
+                              </a>
+                            </>
+                          ) : null}
                         </p>
-                      ) : null}
-                    </article>
-                  ))
+                        {src.summary ? <p className='mf-source-body'>{src.summary}</p> : null}
+                        {src.excerpt ? <p className='mf-source-excerpt'>{src.excerpt}</p> : null}
+                        {src.relevance ? (
+                          <p className='mf-detail-hint'>
+                            <strong>Relevance:</strong> {src.relevance}
+                          </p>
+                        ) : null}
+                      </article>
+                    )
+                  })
                 )}
               </div>
             </div>

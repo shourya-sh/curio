@@ -2,43 +2,43 @@ from services.agents.draft_models import EdgeKind, PaletteRole
 
 
 RESEARCH_PALETTE: dict[PaletteRole, str] = {
-    "root": "#14b8a6",
-    "branch_a": "#38bdf8",
-    "branch_b": "#818cf8",
-    "branch_c": "#34d399",
-    "branch_d": "#60a5fa",
-    "branch_e": "#a78bfa",
-    "emphasis": "#f59e0b",
-    "neutral": "#94a3b8",
+    "root": "#0ea5a4",
+    "branch_a": "#4f8df7",
+    "branch_b": "#7c6df2",
+    "branch_c": "#1fbf9a",
+    "branch_d": "#3aa7d8",
+    "branch_e": "#b06ee8",
+    "emphasis": "#d89a1d",
+    "neutral": "#7891ad",
 }
 
 PLAN_PALETTE: dict[PaletteRole, str] = {
-    "root": "#f97316",
-    "branch_a": "#f59e0b",
-    "branch_b": "#fb7185",
-    "branch_c": "#a78bfa",
-    "branch_d": "#22c55e",
-    "branch_e": "#38bdf8",
-    "emphasis": "#ef4444",
-    "neutral": "#94a3b8",
+    "root": "#e9782f",
+    "branch_a": "#d89a1d",
+    "branch_b": "#e06a8a",
+    "branch_c": "#8b78e6",
+    "branch_d": "#24a96b",
+    "branch_e": "#3aa7d8",
+    "emphasis": "#d84a4a",
+    "neutral": "#7891ad",
 }
 
 EDGE_COLORS: dict[str, dict[EdgeKind, str | None]] = {
     "research": {
-        "hierarchy": "#7dd3fc",
-        "prerequisite": "#a5b4fc",
-        "sequence_next": "#67e8f9",
-        "supporting": "#99f6e4",
-        "optional": "#cbd5e1",
-        "critical": "#fbbf24",
+        "hierarchy": "#66c7de",
+        "prerequisite": "#9da8ef",
+        "sequence_next": "#54c9c8",
+        "supporting": "#86dbc9",
+        "optional": "#b8c4d4",
+        "critical": "#d8a52d",
     },
     "plan": {
-        "hierarchy": "#fdba74",
-        "prerequisite": "#fda4af",
-        "sequence_next": "#f59e0b",
-        "supporting": "#86efac",
-        "optional": "#cbd5e1",
-        "critical": "#ef4444",
+        "hierarchy": "#e9a46b",
+        "prerequisite": "#e8a0ad",
+        "sequence_next": "#d99a22",
+        "supporting": "#7fd19e",
+        "optional": "#b8c4d4",
+        "critical": "#d84a4a",
     },
 }
 

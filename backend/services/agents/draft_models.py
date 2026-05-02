@@ -35,7 +35,11 @@ class SourceDraft(BaseModel):
         default="",
         description="Short quoted or paraphrased passage (<= 400 chars) illustrating the claim.",
     )
-    relevance: str = Field(default="", description="Which nodes or themes on the map this source backs.")
+    relevance: str = Field(default="", description="1-2 sentences on why this source matters for the cited nodes.")
+    node_temp_ids: list[str] = Field(
+        default_factory=list,
+        description='Temp ids from this response (e.g. "n2", "n5") for every node this source substantiates; at least one required.',
+    )
 
 
 class GraphDraft(BaseModel):

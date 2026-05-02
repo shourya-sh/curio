@@ -12,7 +12,8 @@ import {
 import { markSignedIn } from '../lib/auth'
 import { sessionListQueryKey } from '../lib/queryClient'
 import { formatSessionUpdatedAt } from '../lib/sessionDisplay'
-import { readRecentSessionIds, removeSessionFromRecent } from '../lib/sessionRecent'
+import { readRecentSessionRefs, removeSessionFromRecent } from '../lib/sessionRecent'
+import { workspacePathSegment } from '../lib/workspaceRouting'
 
 export function LibraryPage() {
   const queryClient = useQueryClient()
@@ -34,15 +35,15 @@ export function LibraryPage() {
   const loading = sessionsQuery.isPending && projects.length === 0
 
   const renameMutation = useMutation({
-    mutationFn: ({ projectId, nextTitle }: { projectId: number; nextTitle: string }) =>
-      updateSessionTitle(projectId, nextTitle),
-    onMutate: async ({ projectId, nextTitle }) => {
+    mutationFn: ({ project, nextTitle }: { project: SessionListItem; nextTitle: string }) =>
+      updateSessionTitle(workspacePathSegment(project), nextTitle),
+    onMutate: async ({ project, nextTitle }) => {
       await queryClient.cancelQueries({ queryKey: sessionListQueryKey })
       const previousProjects =
         queryClient.getQueryData<SessionListItem[]>(sessionListQueryKey) ?? []
       queryClient.setQueryData<SessionListItem[]>(sessionListQueryKey, (current = []) =>
         current.map((item) =>
-          item.id === projectId
+          item.id === project.id
             ? { ...item, title: nextTitle, updated_at: new Date().toISOString() }
             : item,
         ),
@@ -62,17 +63,17 @@ export function LibraryPage() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: ({ projectId }: { projectId: number }) => deleteSession(projectId),
-    onMutate: async ({ projectId }) => {
+    mutationFn: ({ project }: { project: SessionListItem }) => deleteSession(workspacePathSegment(project)),
+    onMutate: async ({ project }) => {
       await queryClient.cancelQueries({ queryKey: sessionListQueryKey })
       const previousProjects =
         queryClient.getQueryData<SessionListItem[]>(sessionListQueryKey) ?? []
       queryClient.setQueryData<SessionListItem[]>(sessionListQueryKey, (current = []) =>
-        current.filter((item) => item.id !== projectId),
+        current.filter((item) => item.id !== project.id),
       )
-      removeSessionFromRecent(projectId)
+      removeSessionFromRecent({ id: project.id, slug: project.slug })
       const stored = localStorage.getItem('curio:lastSessionId')
-      if (stored === String(projectId)) {
+      if (stored === String(project.id) || stored === project.slug) {
         localStorage.removeItem('curio:lastSessionId')
       }
       return { previousProjects }
@@ -89,9 +90,8 @@ export function LibraryPage() {
     },
   })
 
-  const busyProjectId =
-    (renameMutation.isPending ? renameMutation.variables?.projectId : null) ??
-    (deleteMutation.isPending ? deleteMutation.variables?.projectId : null)
+  /** Only rename blocks other controls; deletes run in the background after optimistic UI update. */
+  const busyProjectId = renameMutation.isPending ? renameMutation.variables?.project.id : null
 
   const filteredProjects = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -99,11 +99,15 @@ export function LibraryPage() {
     return projects.filter((project) => project.title.toLowerCase().includes(query))
   }, [projects, search])
 
-  const workspaceSessionId = useMemo(() => {
-    const recentFirst = readRecentSessionIds()[0]
+  const workspaceSessionSegment = useMemo(() => {
+    const refs = readRecentSessionRefs()
     const stored = localStorage.getItem('curio:lastSessionId')
-    const storedNum = stored != null && !Number.isNaN(Number(stored)) ? Number(stored) : null
-    return recentFirst ?? storedNum ?? projects[0]?.id ?? null
+    const candidates = [...refs, ...(stored ? [stored] : [])]
+    for (const r of candidates) {
+      const row = projects.find((p) => p.slug === r || String(p.id) === r)
+      if (row) return workspacePathSegment(row)
+    }
+    return projects[0] ? workspacePathSegment(projects[0]) : null
   }, [projects])
 
   const openRenameModal = (project: SessionListItem) => {
@@ -119,7 +123,7 @@ export function LibraryPage() {
     const nextTitle = renameValue.trim()
     if (!nextTitle || nextTitle === project.title) return
 
-    await renameMutation.mutateAsync({ projectId: project.id, nextTitle })
+    await renameMutation.mutateAsync({ project, nextTitle })
     setRenameTarget(null)
     setRenameValue('')
   }
@@ -129,17 +133,17 @@ export function LibraryPage() {
     setDeleteTarget(project)
   }
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     const project = deleteTarget
     if (!project || busyProjectId !== null) return
 
-    await deleteMutation.mutateAsync({ projectId: project.id })
+    deleteMutation.mutate({ project })
     setDeleteTarget(null)
   }
 
   return (
     <div className='app-shell library-shell'>
-      <AppTopBar activeItem='library' workspaceSessionId={workspaceSessionId} />
+      <AppTopBar activeItem='library' workspaceSessionId={workspaceSessionSegment} />
 
       <main className='library-grid-bg'>
         <DecorativePageBackground />
@@ -181,7 +185,7 @@ export function LibraryPage() {
             <div className='library-grid'>
               {filteredProjects.map((project, index) => (
                 <article key={project.id} className='library-project-card'>
-                  <Link to={`/workspace/${project.id}`} className='project-card-link'>
+                  <Link to={`/workspace/${workspacePathSegment(project)}`} className='project-card-link'>
                     <div className='project-thumb'>
                       <span className={`project-mode-pill ${project.mode}`}>
                         {project.mode === 'plan' ? 'Plan mode' : 'Research mode'}
@@ -301,10 +305,10 @@ export function LibraryPage() {
               <button
                 type='button'
                 className='danger'
-                onClick={() => void handleDelete()}
+                onClick={handleDelete}
                 disabled={busyProjectId !== null}
               >
-                {busyProjectId === deleteTarget.id ? 'Deleting...' : 'Delete project'}
+                Delete project
               </button>
             </div>
           </div>

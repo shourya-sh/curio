@@ -68,6 +68,13 @@ def filter_draft(
         title = (s.title or "").strip()
         if not title:
             continue
+        temp_ids: list[str] = []
+        for tid in s.node_temp_ids or []:
+            tid_norm = (str(tid) if tid is not None else "").strip()
+            if tid_norm in used_ids:
+                temp_ids.append(tid_norm)
+        if not temp_ids:
+            continue
         sources.append(
             SourceDraft(
                 title=title[:500],
@@ -77,6 +84,7 @@ def filter_draft(
                 summary=(s.summary or "").strip()[:4000],
                 excerpt=(s.excerpt or "").strip()[:800],
                 relevance=(s.relevance or "").strip()[:2000],
+                node_temp_ids=temp_ids,
             )
         )
         if len(sources) >= 12:

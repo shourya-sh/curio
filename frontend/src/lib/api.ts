@@ -17,6 +17,8 @@ const API_BASE = resolveApiBase()
 interface SessionCreatePayload {
   title: string
   mode: SessionMode
+  /** Used for slug when title slugifies to empty (e.g. first prompt). */
+  slug_source?: string
 }
 
 export interface SessionPromptPayload {
@@ -34,6 +36,9 @@ export interface NodeOut {
   depth: number
   position_x: number
   position_y: number
+  /** Agent / canonical layout; dragging only changes position_x/y. */
+  original_position_x?: number
+  original_position_y?: number
   node_type: string
   color?: string | null
   created_at: string
@@ -67,6 +72,7 @@ export interface MessageOut {
 
 export interface SessionDetail {
   id: number
+  slug: string
   user_id?: number | null
   title: string
   mode: SessionMode
@@ -84,6 +90,8 @@ export interface NodeCreatePayload {
   parent_id?: number
   position_x?: number
   position_y?: number
+  original_position_x?: number
+  original_position_y?: number
   node_type?: string
   color?: string | null
   /** JSONB: list from AI, or `{ radiusPx }` for manual node size. */
@@ -96,6 +104,8 @@ export interface NodeUpdatePayload {
   details?: string | null
   position_x?: number
   position_y?: number
+  original_position_x?: number
+  original_position_y?: number
   node_type?: string
   color?: string | null
   subtopics?: unknown
@@ -108,6 +118,8 @@ export interface NodeBulkItem {
   details?: string | null
   position_x?: number
   position_y?: number
+  original_position_x?: number
+  original_position_y?: number
   node_type?: string
   color?: string | null
   subtopics?: unknown
@@ -164,102 +176,103 @@ export async function createSession(payload: SessionCreatePayload): Promise<Sess
 }
 
 export async function createNode(
-  sessionId: number,
+  sessionRef: string | number,
   payload: NodeCreatePayload,
 ): Promise<NodeOut> {
-  return request<NodeOut>(`/sessions/${sessionId}/nodes/`, {
+  return request<NodeOut>(`/sessions/${sessionRef}/nodes/`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
 export async function updateNode(
-  sessionId: number,
+  sessionRef: string | number,
   nodeId: number,
   payload: NodeUpdatePayload,
 ): Promise<NodeOut> {
-  return request<NodeOut>(`/sessions/${sessionId}/nodes/${nodeId}`, {
+  return request<NodeOut>(`/sessions/${sessionRef}/nodes/${nodeId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
 }
 
 export async function bulkUpdateNodes(
-  sessionId: number,
+  sessionRef: string | number,
   payload: NodeBulkUpdatePayload,
 ): Promise<{ updated: number[] }> {
-  return request<{ updated: number[] }>(`/sessions/${sessionId}/nodes/`, {
+  return request<{ updated: number[] }>(`/sessions/${sessionRef}/nodes/`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
 }
 
 export async function deleteNode(
-  sessionId: number,
+  sessionRef: string | number,
   nodeId: number,
 ): Promise<{ detail: string }> {
-  return request<{ detail: string }>(`/sessions/${sessionId}/nodes/${nodeId}`, {
+  return request<{ detail: string }>(`/sessions/${sessionRef}/nodes/${nodeId}`, {
     method: 'DELETE',
   })
 }
 
 export async function restoreNode(
-  sessionId: number,
+  sessionRef: string | number,
   nodeId: number,
   payload: NodeRestorePayload,
 ): Promise<NodeOut> {
-  return request<NodeOut>(`/sessions/${sessionId}/nodes/${nodeId}/restore`, {
+  return request<NodeOut>(`/sessions/${sessionRef}/nodes/${nodeId}/restore`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
 export async function createLink(
-  sessionId: number,
+  sessionRef: string | number,
   payload: LinkCreatePayload,
 ): Promise<LinkOut> {
-  return request<LinkOut>(`/sessions/${sessionId}/links/`, {
+  return request<LinkOut>(`/sessions/${sessionRef}/links/`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
 export async function updateLink(
-  sessionId: number,
+  sessionRef: string | number,
   linkId: number,
   payload: LinkUpdatePayload,
 ): Promise<LinkOut> {
-  return request<LinkOut>(`/sessions/${sessionId}/links/${linkId}`, {
+  return request<LinkOut>(`/sessions/${sessionRef}/links/${linkId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
 }
 
 export async function deleteLink(
-  sessionId: number,
+  sessionRef: string | number,
   linkId: number,
 ): Promise<{ detail: string }> {
-  return request<{ detail: string }>(`/sessions/${sessionId}/links/${linkId}`, {
+  return request<{ detail: string }>(`/sessions/${sessionRef}/links/${linkId}`, {
     method: 'DELETE',
   })
 }
 
 export async function restoreLink(
-  sessionId: number,
+  sessionRef: string | number,
   link: LinkOut,
 ): Promise<LinkOut> {
-  return request<LinkOut>(`/sessions/${sessionId}/links/${link.id}/restore`, {
+  return request<LinkOut>(`/sessions/${sessionRef}/links/${link.id}/restore`, {
     method: 'POST',
     body: JSON.stringify(link),
   })
 }
 
-export async function getSession(sessionId: string): Promise<SessionDetail> {
-  return request<SessionDetail>(`/sessions/${sessionId}`)
+export async function getSession(sessionRef: string): Promise<SessionDetail> {
+  return request<SessionDetail>(`/sessions/${sessionRef}`)
 }
 
 export interface SessionListItem {
   id: number
+  slug: string
   title: string
   mode: SessionMode
   created_at: string
@@ -271,17 +284,17 @@ export async function listSessions(): Promise<SessionListItem[]> {
 }
 
 export async function updateSessionTitle(
-  sessionId: number,
+  sessionRef: string | number,
   title: string,
 ): Promise<SessionListItem> {
-  return request<SessionListItem>(`/sessions/${sessionId}`, {
+  return request<SessionListItem>(`/sessions/${sessionRef}`, {
     method: 'PATCH',
     body: JSON.stringify({ title }),
   })
 }
 
-export async function deleteSession(sessionId: number): Promise<{ detail: string }> {
-  return request<{ detail: string }>(`/sessions/${sessionId}`, {
+export async function deleteSession(sessionRef: string | number): Promise<{ detail: string }> {
+  return request<{ detail: string }>(`/sessions/${sessionRef}`, {
     method: 'DELETE',
   })
 }
@@ -294,6 +307,10 @@ export interface ResearchSource {
   summary?: string
   excerpt?: string
   relevance?: string
+  /** Real node ids this source supports (set after graph is persisted). */
+  node_ids?: number[]
+  /** Topics captured when the source was generated; may differ if the node was renamed. */
+  node_topics?: string[]
 }
 
 export type SessionPromptEvent =
@@ -310,14 +327,16 @@ export type SessionPromptEvent =
   | { type: string; data: unknown }
 
 export async function postSessionPromptStream(
-  sessionId: number,
+  sessionRef: string | number,
   payload: SessionPromptPayload,
   onEvent: (event: SessionPromptEvent) => void,
+  options?: { signal?: AbortSignal },
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/sessions/${sessionId}/prompt`, {
+  const response = await fetch(`${API_BASE}/sessions/${sessionRef}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: options?.signal,
   })
   if (!response.ok || !response.body) {
     const body = await response.text()

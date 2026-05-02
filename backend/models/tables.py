@@ -13,6 +13,7 @@ class SessionTable(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, nullable=True)
+    slug = Column(String(255), nullable=False, unique=True)
     title = Column(String(255), nullable=False)
     mode = Column(String(10), nullable=False, default="research")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
@@ -35,6 +36,9 @@ class NodeTable(Base):
     depth = Column(Integer, default=0)
     position_x = Column(Float, nullable=False, default=0)
     position_y = Column(Float, nullable=False, default=0)
+    # Canonical layout from agents / auto-layout; user drags only change position_x/y.
+    original_position_x = Column(Float, nullable=False, default=0)
+    original_position_y = Column(Float, nullable=False, default=0)
     node_type = Column(String(20), nullable=False, default="topic")
     color = Column(String(20), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
