@@ -28,3 +28,12 @@ A learning tool that restructures prompts, finds subtopics, and builds interacti
 
 ## Key Interaction
 User sends a prompt → Claude structures it into nodes/subtopics → rendered as mind map → user clicks a node to expand → Claude branches further with deeper subtopics
+
+## Architecture Conventions
+- **IDs are always `int`** — all `session_id`, `node_id`, `parent_id`, `child_id`, `link_id` across services/routers use `int`. No `str()` wrapping.
+- **`graph_service.py`** is the single module for all graph reads and writes (nodes + links). Routers never do inline `db.query()` for graph tables.
+- **`profile_service.py`** handles BYOK key lookup (`get_user_api_keys`).
+- **`message_service.py`** handles chat message persistence.
+- **`orchestrator.py`** owns all DB persistence during the AI pipeline (user messages, nodes, links, sources, system messages).
+- **`stream_service.py`** is a pure SSE transport layer — validates session, runs orchestrator, yields events, commits/rolls back.
+- **Pydantic serialization** — use `NodeOut`, `LinkOut`, `MessageOut` with `.model_validate(row).model_dump(mode="json")` instead of manual dict builders.

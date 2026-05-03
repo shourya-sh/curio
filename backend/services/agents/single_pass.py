@@ -80,7 +80,7 @@ async def build(
     *,
     prompt: str,
     mode: str,
-    session_id: str,
+    session_id: int,
     anchor: NodeTable | None = None,
     max_nodes: int = 14,
     api_keys: list[str] | None = None,

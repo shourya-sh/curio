@@ -1,3 +1,6 @@
+"""Pure SSE transport layer. Validates the session, runs the orchestrator pipeline, and yields SSE events.
+All DB persistence (messages, nodes, links) is handled by the orchestrator."""
+
 import json
 from starlette.requests import Request
 from sqlalchemy.orm import Session
@@ -15,14 +18,14 @@ def sse_event(event: str, data: dict) -> str:
 
 
 async def run_agent_stream(
-    session_id: str,
+    session_id: int,
     prompt: str,
     db: Session,
     request: Request,
     anchor_node_id: int | None = None,
     api_keys: list[str] | None = None,
 ):
-    """Async generator that runs the appropriate agent and yields SSE events."""
+    """Async generator that runs the orchestrator pipeline and yields SSE events."""
     try:
         # validate session
         session = message_service.get_session_row(db, session_id)
@@ -30,19 +33,6 @@ async def run_agent_stream(
             yield sse_event("error", {"message": f"Session {session_id} not found"})
             return
 
-        user_message = message_service.create_user_message(db, session_id, prompt)
-        yield sse_event(
-            "message_created",
-            {
-                "id": user_message.id,
-                "session_id": user_message.session_id,
-                "role": user_message.role,
-                "content": user_message.content,
-                "created_at": user_message.created_at.isoformat() if user_message.created_at else None,
-            },
-        )
-
-        # pick agent based on mode
         mode = session.mode
         log_prompt_token_usage(
             session_id=session_id,
@@ -56,41 +46,9 @@ async def run_agent_stream(
 
         # run agent pipeline, yielding events as they come
         async for event in orchestrator.run_pipeline(session_id, prompt, db, mode=mode, anchor_node_id=anchor_node_id, api_keys=api_keys):
-            # check if client disconnected
             if await request.is_disconnected():
                 logger.info(f"Client disconnected mid-stream session={session_id}")
                 return
-
-            if event["type"] == "message_created":
-                data = event.get("data") or {}
-                message = message_service.create_message(
-                    db,
-                    session_id,
-                    data.get("role") or "system",
-                    data.get("content") or "",
-                )
-                event = {
-                    "type": "message_created",
-                    "data": {
-                        "id": message.id,
-                        "session_id": message.session_id,
-                        "role": message.role,
-                        "content": message.content,
-                        "created_at": message.created_at.isoformat() if message.created_at else None,
-                    },
-                }
-            elif event["type"] == "sources_created":
-                data = event.get("data") or {}
-                message = message_service.create_sources_message(db, session_id, data)
-                event = {
-                    "type": "sources_created",
-                    "data": {
-                        "id": message.id,
-                        "session_id": message.session_id,
-                        "sources": data.get("sources") or [],
-                        "created_at": message.created_at.isoformat() if message.created_at else None,
-                    },
-                }
             yield sse_event(event["type"], event["data"])
 
         db.commit()

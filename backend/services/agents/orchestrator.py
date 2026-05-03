@@ -1,47 +1,16 @@
-"""AI graph pipeline: all database writes go through ``graph_service`` (no direct ``db.add`` / queries here)."""
+"""AI graph pipeline: all database writes go through ``graph_service`` and ``message_service``."""
 
 from sqlalchemy.orm import Session
 
-from models.tables import NodeLinkTable, NodeTable
-from services import graph_service
+from models.session_models import NodeOut, LinkOut, MessageOut
+from models.tables import NodeTable
+from services import graph_service, message_service
 from services.agents import single_pass
 from services.agents.core import structuring, validation
 from services.agents.draft_models import GraphDraft, SourceDraft
 
 MAX_RESEARCH_NODES = 14
 MAX_PLAN_NODES = 12
-
-
-def _node_dict(node: NodeTable) -> dict:
-    return {
-        "id": node.id,
-        "session_id": node.session_id,
-        "topic": node.topic,
-        "summary": node.summary,
-        "details": node.details,
-        "subtopics": node.subtopics,
-        "depth": node.depth,
-        "position_x": node.position_x,
-        "position_y": node.position_y,
-        "original_position_x": getattr(node, "original_position_x", node.position_x),
-        "original_position_y": getattr(node, "original_position_y", node.position_y),
-        "node_type": node.node_type,
-        "color": node.color,
-        "created_at": node.created_at.isoformat() if node.created_at else None,
-        "updated_at": node.updated_at.isoformat() if node.updated_at else None,
-    }
-
-
-def _link_dict(link: NodeLinkTable) -> dict:
-    return {
-        "id": link.id,
-        "session_id": link.session_id,
-        "parent_id": link.parent_id,
-        "child_id": link.child_id,
-        "color": link.color,
-        "line_style": link.line_style,
-        "created_at": link.created_at.isoformat() if link.created_at else None,
-    }
 
 
 def _resolved_sources_payload(
@@ -68,7 +37,7 @@ def _resolved_sources_payload(
     return out
 
 
-async def _research_draft(session_id: str, prompt: str, anchor: NodeTable | None, api_keys: list[str] | None = None) -> GraphDraft:
+async def _research_draft(session_id: int, prompt: str, anchor: NodeTable | None, api_keys: list[str] | None = None) -> GraphDraft:
     draft = await single_pass.build(
         prompt=prompt,
         mode="research",
@@ -80,7 +49,7 @@ async def _research_draft(session_id: str, prompt: str, anchor: NodeTable | None
     return validation.filter_draft(draft, mode="research", max_nodes=MAX_RESEARCH_NODES)
 
 
-async def _plan_draft(session_id: str, prompt: str, anchor: NodeTable | None, api_keys: list[str] | None = None) -> GraphDraft:
+async def _plan_draft(session_id: int, prompt: str, anchor: NodeTable | None, api_keys: list[str] | None = None) -> GraphDraft:
     draft = await single_pass.build(
         prompt=prompt,
         mode="plan",
@@ -92,7 +61,11 @@ async def _plan_draft(session_id: str, prompt: str, anchor: NodeTable | None, ap
     return validation.filter_draft(draft, mode="plan", max_nodes=MAX_PLAN_NODES, max_fanout=5)
 
 
-async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
+async def run_pipeline(session_id: int, prompt: str, db: Session, *, mode: str, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
+    # persist user message
+    user_message = message_service.create_user_message(db, session_id, prompt)
+    yield {"type": "message_created", "data": MessageOut.model_validate(user_message).model_dump(mode="json")}
+
     anchor = graph_service.find_expansion_anchor(db, session_id, anchor_node_id)
     if mode == "plan":
         draft = await _plan_draft(session_id, prompt, anchor, api_keys=api_keys)
@@ -120,12 +93,19 @@ async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, 
             depth=node.depth,
         )
         temp_to_real[node.temp_id] = created.id
-        yield {"type": "node_created", "data": _node_dict(created)}
+        yield {"type": "node_created", "data": NodeOut.model_validate(created).model_dump(mode="json")}
 
     if structured.sources:
+        sources_payload = {"sources": _resolved_sources_payload(structured.sources, temp_to_real, topic_by_temp)}
+        sources_message = message_service.create_sources_message(db, session_id, sources_payload)
         yield {
             "type": "sources_created",
-            "data": {"sources": _resolved_sources_payload(structured.sources, temp_to_real, topic_by_temp)},
+            "data": {
+                "id": sources_message.id,
+                "session_id": sources_message.session_id,
+                "sources": sources_payload.get("sources") or [],
+                "created_at": sources_message.created_at.isoformat() if sources_message.created_at else None,
+            },
         }
 
     if anchor:
@@ -136,12 +116,12 @@ async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, 
             link = graph_service.create_link(
                 db,
                 session_id=session_id,
-                parent_id=str(anchor.id),
-                child_id=str(child_id),
+                parent_id=anchor.id,
+                child_id=child_id,
                 color=None,
                 line_style="solid",
             )
-            yield {"type": "link_created", "data": _link_dict(link)}
+            yield {"type": "link_created", "data": LinkOut.model_validate(link).model_dump(mode="json")}
 
     for edge in structured.edges:
         parent_id = temp_to_real.get(edge.parent_temp_id)
@@ -151,16 +131,15 @@ async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, 
         link = graph_service.create_link(
             db,
             session_id=session_id,
-            parent_id=str(parent_id),
-            child_id=str(child_id),
+            parent_id=parent_id,
+            child_id=child_id,
             color=edge.color,
             line_style=edge.line_style,
         )
-        yield {"type": "link_created", "data": _link_dict(link)}
+        yield {"type": "link_created", "data": LinkOut.model_validate(link).model_dump(mode="json")}
 
     summary = structured.assistant_summary or (
         f"Added {len(structured.nodes)} {mode} nodes and {len(structured.edges)} connections."
     )
-    yield {"type": "message_created", "data": {"role": "system", "content": summary}}
-
-
+    sys_message = message_service.create_message(db, session_id, "system", summary)
+    yield {"type": "message_created", "data": MessageOut.model_validate(sys_message).model_dump(mode="json")}

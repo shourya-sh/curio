@@ -6,15 +6,13 @@ from models.session_models import SessionCreate, SessionUpdate, SessionPrompt, S
 from models.tables import SessionTable
 from sqlalchemy.orm import Session, joinedload
 from db import get_db, SessionLocal
-import json
 
 from auth import get_current_user
-from encryption import decrypt
 from services.graph_service import verify_session_owner
+from services.profile_service import get_user_api_keys
 from services.rate_limit import limit_ai_prompt
 from services.session_identifiers import allocate_unique_slug, base_slug_for_new_session, resolve_session_pk_or_404
 from services.stream_service import run_agent_stream
-from sqlalchemy import text
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -88,29 +86,16 @@ async def session_prompt(
     finally:
         db_resolve.close()
     # Look up user's BYOK keys
-    user_api_keys: list[str] | None = None
     db_keys = SessionLocal()
     try:
-        result = db_keys.execute(
-            text("SELECT gemini_api_keys FROM profiles WHERE id = :uid"),
-            {"uid": user_id},
-        )
-        row = result.mappings().first()
-        if row and row["gemini_api_keys"]:
-            try:
-                decrypted = decrypt(row["gemini_api_keys"])
-                keys = json.loads(decrypted)
-                if keys:
-                    user_api_keys = keys
-            except Exception:
-                pass
+        user_api_keys = get_user_api_keys(db_keys, user_id)
     finally:
         db_keys.close()
 
     # own DB session — stream outlives the request-scoped one
     db = SessionLocal()
     return StreamingResponse(
-        run_agent_stream(str(pk), body.prompt, db, request, anchor_node_id=body.anchor_node_id, api_keys=user_api_keys),
+        run_agent_stream(pk, body.prompt, db, request, anchor_node_id=body.anchor_node_id, api_keys=user_api_keys),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
