@@ -9,7 +9,7 @@ Improve clarity, sequencing, and missing components in a planning graph. Keep it
 practical, and visually readable. Do not overbuild."""
 
 
-async def improve(*, draft: GraphDraft, prompt: str, session_id: str) -> GraphDraft:
+async def improve(*, draft: GraphDraft, prompt: str, session_id: str, api_keys: list[str] | None = None) -> GraphDraft:
     user_prompt = {
         "prompt": prompt,
         "current_graph": draft.model_dump(),
@@ -25,4 +25,5 @@ async def improve(*, draft: GraphDraft, prompt: str, session_id: str) -> GraphDr
         json.dumps(user_prompt),
         session_id=session_id,
         response_model=GraphDraft,
+        api_keys=api_keys,
     )

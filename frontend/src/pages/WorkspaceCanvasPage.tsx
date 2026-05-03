@@ -31,7 +31,6 @@ import { layoutReadableGraph } from '../lib/graphLayout'
 import { buildManualLinkPayload, buildManualNodePayload, buildNodeStylePatch } from '../lib/manualGraph'
 import { readNodeRadiusPx } from '../lib/nodeDisplay'
 import { nodeOrbStyle } from '../lib/nodeOrbStyle'
-import { markSignedIn } from '../lib/auth'
 import { recordSessionOpened } from '../lib/sessionRecent'
 
 interface ChatMessage {
@@ -337,10 +336,6 @@ export function WorkspaceCanvasPage() {
   const [linkPopPos, setLinkPopPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
   const promptAbortRef = useRef<AbortController | null>(null)
   const workspacePageMountedRef = useRef(true)
-
-  useEffect(() => {
-    markSignedIn()
-  }, [])
 
   useEffect(() => {
     workspacePageMountedRef.current = true

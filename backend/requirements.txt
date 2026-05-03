@@ -6,3 +6,5 @@ python-dotenv
 httpx
 google-genai
 pydantic
+PyJWT[crypto]
+cryptography

@@ -9,7 +9,7 @@ For plan mode, break goals into actionable components, steps, dependencies, and 
 Keep the graph practical and execution-oriented."""
 
 
-async def expand(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nodes: int = 8) -> GraphDraft:
+async def expand(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nodes: int = 8, api_keys: list[str] | None = None) -> GraphDraft:
     user_prompt = {
         "prompt": prompt,
         "current_graph": draft.model_dump(),
@@ -25,4 +25,5 @@ async def expand(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nod
         json.dumps(user_prompt),
         session_id=session_id,
         response_model=GraphDraft,
+        api_keys=api_keys,
     )

@@ -92,13 +92,13 @@ def gemini_key_pool_size() -> int:
     return len(_parse_gemini_api_keys())
 
 
-async def call_ai(system_prompt: str, user_prompt: str, session_id: str | None = None) -> str:
-    if AZURE_URL:
+async def call_ai(system_prompt: str, user_prompt: str, session_id: str | None = None, *, api_keys: list[str] | None = None) -> str:
+    if AZURE_URL and not api_keys:
         logger.info("Calling az")
         return await call_azure(system_prompt, user_prompt, session_id=session_id)
-    elif gemini_configured():
+    elif api_keys or gemini_configured():
         logger.info("Calling gemini")
-        return await call_gemini(system_prompt, user_prompt, session_id=session_id)
+        return await call_gemini(system_prompt, user_prompt, session_id=session_id, api_keys=api_keys)
     else:
         logger.error("where tf the ai provider")
         raise ValueError("No AI provider configured")
@@ -217,19 +217,27 @@ async def _try_one_model(
     model: str,
     contents: str,
     config: Any,
+    api_keys: list[str] | None = None,
 ) -> tuple[Any | None, BaseException | None, dict[str, int]]:
-    """Round-robin every live key once for this model. Returns (response, last_exc, counters)."""
-    keys = _live_keys()
+    """Round-robin every live key once for this model. Returns (response, last_exc, counters).
+    If api_keys is provided, uses ONLY those keys (BYOK) instead of the server pool."""
+    if api_keys:
+        keys = list(api_keys)
+    else:
+        keys = _live_keys()
     if not keys:
         return None, ValueError("No live Gemini API keys available"), {}
     n = len(keys)
     last_exc: BaseException | None = None
     counters = {"rl": 0, "zero_quota": 0, "invalid": 0, "other": 0}
 
-    for _ in range(n):
-        api_key = await _pick_api_key_round_robin()
-        if api_key not in keys:
-            continue
+    for i in range(n):
+        if api_keys:
+            api_key = keys[i % n]
+        else:
+            api_key = await _pick_api_key_round_robin()
+            if api_key not in keys:
+                continue
         client = _client_for_api_key(api_key)
         try:
             response = await client.aio.models.generate_content(
@@ -265,18 +273,21 @@ async def _generate_gemini(
     contents: str,
     system_prompt: str,
     response_mime_type: str | None = None,
+    api_keys: list[str] | None = None,
 ) -> Any:
     """Try the configured model across all live keys; rotate to fallback models if the
     primary model has zero free-tier quota for these projects (`limit: 0`); only sleep
-    when keys are merely rate limited (transient)."""
-    if not _parse_gemini_api_keys():
-        raise ValueError("GEMINI_API_KEY or GEMINI_API_KEYS is required for Gemini agent calls")
-    if not _live_keys():
-        raise RuntimeError(
-            "Every Gemini API key has been rejected as invalid/expired this process. "
-            "Renew at https://aistudio.google.com/apikey, fix GEMINI_API_KEYS (no spaces, "
-            "comma-separated), then restart."
-        )
+    when keys are merely rate limited (transient).
+    If api_keys is provided, uses ONLY those keys (BYOK) — never mixes with server pool."""
+    if not api_keys:
+        if not _parse_gemini_api_keys():
+            raise ValueError("GEMINI_API_KEY or GEMINI_API_KEYS is required for Gemini agent calls")
+        if not _live_keys():
+            raise RuntimeError(
+                "Every Gemini API key has been rejected as invalid/expired this process. "
+                "Renew at https://aistudio.google.com/apikey, fix GEMINI_API_KEYS (no spaces, "
+                "comma-separated), then restart."
+            )
 
     cfg_kwargs: dict[str, Any] = {"system_instruction": system_prompt}
     if response_mime_type:
@@ -295,6 +306,7 @@ async def _generate_gemini(
                 model=model,
                 contents=contents,
                 config=config,
+                api_keys=api_keys,
             )
             if response is not None:
                 if model != GEMINI_MODEL:
@@ -302,7 +314,7 @@ async def _generate_gemini(
                 return response
 
             last_exc = exc or last_exc
-            n_live = max(1, len(_live_keys()))
+            n_live = max(1, len(api_keys) if api_keys else len(_live_keys()))
 
             if counters.get("zero_quota", 0) >= n_live:
                 _zero_quota_models.add(model)
@@ -342,9 +354,9 @@ async def _generate_gemini(
     raise RuntimeError(f"Gemini generate_content failed without exception (models tried: {models_tried})")
 
 
-async def call_gemini(system_prompt: str, user_prompt: str, session_id: str | None = None) -> str:
+async def call_gemini(system_prompt: str, user_prompt: str, session_id: str | None = None, *, api_keys: list[str] | None = None) -> str:
     try:
-        response = await _generate_gemini(contents=user_prompt, system_prompt=system_prompt)
+        response = await _generate_gemini(contents=user_prompt, system_prompt=system_prompt, api_keys=api_keys)
         output_text = response.text
         usage_metadata = None
         if hasattr(response, "usage_metadata") and response.usage_metadata:
@@ -388,6 +400,7 @@ async def call_gemini_json(
     session_id: str | None = None,
     response_model: type[BaseModel] | None = None,
     retry_on_parse_error: bool = True,
+    api_keys: list[str] | None = None,
 ) -> Any:
     """Gemini-only JSON helper for agent modules. Never falls back to Azure."""
     prompt = f"{user_prompt}\n\n{_json_schema_hint(response_model)}"
@@ -397,6 +410,7 @@ async def call_gemini_json(
             contents=prompt,
             system_prompt=system_prompt,
             response_mime_type="application/json",
+            api_keys=api_keys,
         )
         response_text = response.text or ""
         usage_metadata = None
@@ -430,6 +444,7 @@ async def call_gemini_json(
             session_id=session_id,
             response_model=response_model,
             retry_on_parse_error=False,
+            api_keys=api_keys,
         )
     except Exception as e:
         logger.error(f"Gemini JSON call failed: {e}")

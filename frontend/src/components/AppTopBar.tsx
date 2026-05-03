@@ -1,7 +1,8 @@
-import { Link } from 'react-router-dom'
-import { isSignedIn } from '../lib/auth'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { useAuth } from '../lib/AuthContext'
 
-type TopNavItem = 'workspace' | 'home' | 'library'
+type TopNavItem = 'workspace' | 'home' | 'library' | 'settings'
 
 interface AppTopBarProps {
   activeItem: TopNavItem
@@ -9,8 +10,20 @@ interface AppTopBarProps {
 }
 
 export function AppTopBar({ activeItem, workspaceSessionId }: AppTopBarProps) {
+  const { user, signOut } = useAuth()
+  const navigate = useNavigate()
+  const [showAccountMenu, setShowAccountMenu] = useState(false)
+
   const workspaceHref = workspaceSessionId ? `/workspace/${workspaceSessionId}` : '/'
-  const homeHref = isSignedIn() ? '/home' : '/'
+  const homeHref = user ? '/home' : '/'
+
+  const userInitial = user?.email ? user.email[0].toUpperCase() : '?'
+
+  const handleSignOut = async () => {
+    setShowAccountMenu(false)
+    await signOut()
+    navigate('/')
+  }
 
   return (
     <header className='top-nav'>
@@ -51,7 +64,12 @@ export function AppTopBar({ activeItem, workspaceSessionId }: AppTopBarProps) {
         </div>
 
         <div className='nav-action-item'>
-          <button type='button' className='icon-btn' aria-label='Settings'>
+          <button
+            type='button'
+            className={`icon-btn ${activeItem === 'settings' ? 'icon-btn-active' : ''}`}
+            aria-label='Settings'
+            onClick={() => navigate('/settings')}
+          >
             <svg viewBox='0 0 24 24' className='icon-svg' aria-hidden='true'>
               <path
                 d='M10.2 3.6h3.6l.4 2.1c.5.2 1 .4 1.5.7l1.9-1 2.5 2.5-1 1.9c.3.5.5 1 .7 1.5l2.1.4v3.6l-2.1.4c-.2.5-.4 1-.7 1.5l1 1.9-2.5 2.5-1.9-1c-.5.3-1 .5-1.5.7l-.4 2.1h-3.6l-.4-2.1c-.5-.2-1-.4-1.5-.7l-1.9 1-2.5-2.5 1-1.9a7 7 0 0 1-.7-1.5l-2.1-.4v-3.6l2.1-.4c.2-.5.4-1 .7-1.5l-1-1.9 2.5-2.5 1.9 1c.5-.3 1-.5 1.5-.7l.4-2.1Z'
@@ -74,11 +92,31 @@ export function AppTopBar({ activeItem, workspaceSessionId }: AppTopBarProps) {
           <span className='nav-action-label'>Settings</span>
         </div>
 
-        <div className='nav-action-item'>
-          <button type='button' className='avatar-btn' aria-label='Account'>
-            S
+        <div className='nav-action-item' style={{ position: 'relative' }}>
+          <button
+            type='button'
+            className='avatar-btn'
+            aria-label='Account'
+            onClick={() => setShowAccountMenu((prev) => !prev)}
+          >
+            {userInitial}
           </button>
           <span className='nav-action-label'>Account</span>
+
+          {showAccountMenu && (
+            <>
+              <div className='account-menu-backdrop' onClick={() => setShowAccountMenu(false)} />
+              <div className='account-menu'>
+                <div className='account-menu-email'>{user?.email}</div>
+                <button type='button' className='account-menu-item' onClick={() => { setShowAccountMenu(false); navigate('/settings') }}>
+                  Settings
+                </button>
+                <button type='button' className='account-menu-item account-menu-signout' onClick={handleSignOut}>
+                  Sign Out
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </header>

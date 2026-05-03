@@ -83,6 +83,7 @@ async def build(
     session_id: str,
     anchor: NodeTable | None = None,
     max_nodes: int = 14,
+    api_keys: list[str] | None = None,
 ) -> GraphDraft:
     """Single Gemini call that returns the full GraphDraft."""
     system_prompt = SYSTEM_PROMPT_PLAN if mode == "plan" else SYSTEM_PROMPT_RESEARCH
@@ -121,4 +122,5 @@ async def build(
         session_id=session_id,
         response_model=GraphDraft,
         retry_on_parse_error=False,
+        api_keys=api_keys,
     )

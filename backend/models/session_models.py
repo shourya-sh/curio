@@ -1,6 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from typing import Any, Optional, List
 from datetime import datetime
+from uuid import UUID
 
 
 class SessionCreate(BaseModel):
@@ -66,7 +67,7 @@ class MessageOut(BaseModel):
 class SessionDetail(BaseModel):
     id: int
     slug: str
-    user_id: Optional[int] = None
+    user_id: Optional[str | UUID] = None
     title: str
     mode: str
     created_at: datetime
@@ -74,6 +75,10 @@ class SessionDetail(BaseModel):
     nodes: List[NodeOut] = []
     links: List[LinkOut] = []
     messages: List[MessageOut] = []
+
+    @field_serializer("user_id")
+    def serialize_user_id(self, v: str | UUID | None) -> str | None:
+        return str(v) if v is not None else None
 
     class Config:
         from_attributes = True

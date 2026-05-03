@@ -20,6 +20,7 @@ async def run_agent_stream(
     db: Session,
     request: Request,
     anchor_node_id: int | None = None,
+    api_keys: list[str] | None = None,
 ):
     """Async generator that runs the appropriate agent and yields SSE events."""
     try:
@@ -58,7 +59,7 @@ async def run_agent_stream(
             return
 
         # run agent, yielding events as they come
-        async for event in agent(session_id, prompt, db, anchor_node_id=anchor_node_id):
+        async for event in agent(session_id, prompt, db, anchor_node_id=anchor_node_id, api_keys=api_keys):
             # check if client disconnected
             if await request.is_disconnected():
                 logger.info(f"Client disconnected mid-stream session={session_id}")

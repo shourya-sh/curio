@@ -11,7 +11,7 @@ Plan mode should expose dependencies, sequence, and critical-path relationships.
 Return the same nodes with an explicit edge list. Avoid self-loops, duplicate edges, and chaotic cross-links."""
 
 
-async def connect(*, draft: GraphDraft, mode: str, session_id: str, anchor_temp_id: str | None = None) -> GraphDraft:
+async def connect(*, draft: GraphDraft, mode: str, session_id: str, anchor_temp_id: str | None = None, api_keys: list[str] | None = None) -> GraphDraft:
     user_prompt = {
         "mode": mode,
         "anchor_temp_id": anchor_temp_id,
@@ -31,6 +31,7 @@ async def connect(*, draft: GraphDraft, mode: str, session_id: str, anchor_temp_
         json.dumps(user_prompt),
         session_id=session_id,
         response_model=GraphDraft,
+        api_keys=api_keys,
     )
     if not connected.nodes:
         connected.nodes = draft.nodes

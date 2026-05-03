@@ -12,7 +12,7 @@ class SessionTable(Base):
     __tablename__ = "sessions"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    user_id = Column(BigInteger, nullable=True)
+    user_id = Column(String, nullable=True)
     slug = Column(String(255), nullable=False, unique=True)
     title = Column(String(255), nullable=False)
     mode = Column(String(10), nullable=False, default="research")

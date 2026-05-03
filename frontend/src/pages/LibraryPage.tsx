@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
@@ -9,7 +9,6 @@ import {
   type SessionListItem,
   updateSessionTitle,
 } from '../lib/api'
-import { markSignedIn } from '../lib/auth'
 import { sessionListQueryKey } from '../lib/queryClient'
 import { formatSessionUpdatedAt } from '../lib/sessionDisplay'
 import { readRecentSessionRefs, removeSessionFromRecent } from '../lib/sessionRecent'
@@ -21,10 +20,6 @@ export function LibraryPage() {
   const [renameTarget, setRenameTarget] = useState<SessionListItem | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<SessionListItem | null>(null)
-
-  useEffect(() => {
-    markSignedIn()
-  }, [])
 
   const sessionsQuery = useQuery({
     queryKey: sessionListQueryKey,

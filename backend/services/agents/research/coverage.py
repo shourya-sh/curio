@@ -9,7 +9,7 @@ Find important gaps in the research graph: missing prerequisites, hidden assumpt
 unanswered why/how questions, and branches that are too shallow. Return a concise improved graph."""
 
 
-async def find_gaps(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nodes: int = 4) -> GraphDraft:
+async def find_gaps(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nodes: int = 4, api_keys: list[str] | None = None) -> GraphDraft:
     user_prompt = {
         "prompt": prompt,
         "current_graph": draft.model_dump(),
@@ -25,4 +25,5 @@ async def find_gaps(*, draft: GraphDraft, prompt: str, session_id: str, max_new_
         json.dumps(user_prompt),
         session_id=session_id,
         response_model=GraphDraft,
+        api_keys=api_keys,
     )

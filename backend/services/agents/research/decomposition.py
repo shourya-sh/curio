@@ -9,7 +9,7 @@ For research mode, push promising ideas one level deeper. Add sub-mechanisms, pr
 causal reasons, and missing explanatory layers. Do not add fluff or repeats."""
 
 
-async def expand(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nodes: int = 6) -> GraphDraft:
+async def expand(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nodes: int = 6, api_keys: list[str] | None = None) -> GraphDraft:
     user_prompt = {
         "prompt": prompt,
         "current_graph": draft.model_dump(),
@@ -25,4 +25,5 @@ async def expand(*, draft: GraphDraft, prompt: str, session_id: str, max_new_nod
         json.dumps(user_prompt),
         session_id=session_id,
         response_model=GraphDraft,
+        api_keys=api_keys,
     )

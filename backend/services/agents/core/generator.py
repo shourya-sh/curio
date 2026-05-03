@@ -31,6 +31,7 @@ async def generate(
     session_id: str,
     anchor: NodeTable | None = None,
     max_nodes: int = 7,
+    api_keys: list[str] | None = None,
 ) -> GraphDraft:
     user_prompt = {
         "mode": mode,
@@ -50,4 +51,5 @@ async def generate(
         json.dumps(user_prompt),
         session_id=session_id,
         response_model=GraphDraft,
+        api_keys=api_keys,
     )

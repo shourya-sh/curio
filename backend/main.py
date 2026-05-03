@@ -44,10 +44,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 #routers below!
-from routers import session_router, node_router, link_router
+from routers import session_router, node_router, link_router, profile_router
 app.include_router(session_router.router)
 app.include_router(node_router.router)
 app.include_router(link_router.router)
+app.include_router(profile_router.router)
 
 
 #health check + db check
@@ -59,3 +60,4 @@ def health(db: Session = Depends(get_db)):
         return {"status": "ok", "database": "connected"}
     except Exception as e:
         return {"status": "error", "database": str(e)}
+

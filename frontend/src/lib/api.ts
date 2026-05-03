@@ -1,3 +1,5 @@
+import { supabase } from './supabase'
+
 export type SessionMode = 'research' | 'plan'
 
 function resolveApiBase(): string {
@@ -13,6 +15,29 @@ function resolveApiBase(): string {
 }
 
 const API_BASE = resolveApiBase()
+
+/**
+ * Module-level token cache — updated by AuthContext via setAccessToken().
+ * This avoids race conditions where supabase.auth.getSession() returns null
+ * briefly after page load even when the user is authenticated.
+ */
+let _accessToken: string | null = null
+
+/** Called by AuthContext whenever the session changes. */
+export function setAccessToken(token: string | null) {
+  _accessToken = token
+}
+
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  // Prefer the cached token (set by AuthContext, always in sync with auth state)
+  if (_accessToken) {
+    return { Authorization: `Bearer ${_accessToken}` }
+  }
+  // Fallback: try supabase directly (covers edge cases during init)
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) return {}
+  return { Authorization: `Bearer ${session.access_token}` }
+}
 
 interface SessionCreatePayload {
   title: string
@@ -142,11 +167,13 @@ export interface LinkUpdatePayload {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const authHeaders = await getAuthHeaders()
   let response: Response
   try {
     response = await fetch(`${API_BASE}${path}`, {
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders,
         ...(init?.headers ?? {}),
       },
       ...init,
@@ -332,9 +359,10 @@ export async function postSessionPromptStream(
   onEvent: (event: SessionPromptEvent) => void,
   options?: { signal?: AbortSignal },
 ): Promise<void> {
+  const authHeaders = await getAuthHeaders()
   const response = await fetch(`${API_BASE}/sessions/${sessionRef}/prompt`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
     body: JSON.stringify(payload),
     signal: options?.signal,
   })

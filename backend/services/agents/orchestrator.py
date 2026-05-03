@@ -68,34 +68,36 @@ def _resolved_sources_payload(
     return out
 
 
-async def _research_draft(session_id: str, prompt: str, anchor: NodeTable | None) -> GraphDraft:
+async def _research_draft(session_id: str, prompt: str, anchor: NodeTable | None, api_keys: list[str] | None = None) -> GraphDraft:
     draft = await single_pass.build(
         prompt=prompt,
         mode="research",
         session_id=session_id,
         anchor=anchor,
         max_nodes=MAX_RESEARCH_NODES,
+        api_keys=api_keys,
     )
     return validation.filter_draft(draft, mode="research", max_nodes=MAX_RESEARCH_NODES)
 
 
-async def _plan_draft(session_id: str, prompt: str, anchor: NodeTable | None) -> GraphDraft:
+async def _plan_draft(session_id: str, prompt: str, anchor: NodeTable | None, api_keys: list[str] | None = None) -> GraphDraft:
     draft = await single_pass.build(
         prompt=prompt,
         mode="plan",
         session_id=session_id,
         anchor=anchor,
         max_nodes=MAX_PLAN_NODES,
+        api_keys=api_keys,
     )
     return validation.filter_draft(draft, mode="plan", max_nodes=MAX_PLAN_NODES, max_fanout=5)
 
 
-async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, anchor_node_id: int | None = None):
+async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
     anchor = graph_service.find_expansion_anchor(db, session_id, anchor_node_id)
     if mode == "plan":
-        draft = await _plan_draft(session_id, prompt, anchor)
+        draft = await _plan_draft(session_id, prompt, anchor, api_keys=api_keys)
     else:
-        draft = await _research_draft(session_id, prompt, anchor)
+        draft = await _research_draft(session_id, prompt, anchor, api_keys=api_keys)
 
     structured = structuring.organize(draft=draft, mode=mode, anchor=anchor)
     temp_to_real: dict[str, int] = {}
@@ -162,11 +164,11 @@ async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, 
     yield {"type": "message_created", "data": {"role": "system", "content": summary}}
 
 
-async def run_research(session_id: str, prompt: str, db: Session, *, anchor_node_id: int | None = None):
-    async for event in run_pipeline(session_id, prompt, db, mode="research", anchor_node_id=anchor_node_id):
+async def run_research(session_id: str, prompt: str, db: Session, *, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
+    async for event in run_pipeline(session_id, prompt, db, mode="research", anchor_node_id=anchor_node_id, api_keys=api_keys):
         yield event
 
 
-async def run_plan(session_id: str, prompt: str, db: Session, *, anchor_node_id: int | None = None):
-    async for event in run_pipeline(session_id, prompt, db, mode="plan", anchor_node_id=anchor_node_id):
+async def run_plan(session_id: str, prompt: str, db: Session, *, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
+    async for event in run_pipeline(session_id, prompt, db, mode="plan", anchor_node_id=anchor_node_id, api_keys=api_keys):
         yield event

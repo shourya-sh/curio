@@ -1,6 +1,6 @@
-import { type CSSProperties, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { isSignedIn, markSignedIn } from '../lib/auth'
+import { useAuth } from '../lib/AuthContext'
 
 type NodeKind = 'center' | 'research' | 'plan' | 'shared'
 type IconName =
@@ -179,7 +179,7 @@ function NodeIcon({ name }: { name: IconName }) {
 
 export function LandingPage() {
   const navigate = useNavigate()
-  const [activeModal, setActiveModal] = useState<'login' | 'create' | null>(null)
+  const { user, loading } = useAuth()
   const nodeById = useMemo(
     () =>
       Object.fromEntries(
@@ -188,19 +188,11 @@ export function LandingPage() {
     [],
   )
 
-  const openModal = (type: 'login' | 'create') => setActiveModal(type)
-  const closeModal = () => setActiveModal(null)
-  const continueToHome = () => {
-    markSignedIn()
-    setActiveModal(null)
-    navigate('/home')
-  }
-
   useEffect(() => {
-    if (isSignedIn()) {
+    if (!loading && user) {
       navigate('/home', { replace: true })
     }
-  }, [navigate])
+  }, [navigate, user, loading])
   const getNodeRadius = (node: LandingNode) => (node.kind === 'center' ? 8.2 : 5.1)
   const getAnchorPoint = (node: LandingNode, side: LinkSide) => {
     const radius = getNodeRadius(node)
@@ -242,10 +234,10 @@ export function LandingPage() {
           <span>Curio</span>
         </div>
         <div className='landing-nav-actions'>
-          <button type='button' className='ghost' onClick={() => openModal('login')}>
+          <button type='button' className='ghost' onClick={() => navigate('/login')}>
             Login
           </button>
-          <button type='button' onClick={() => openModal('create')}>
+          <button type='button' onClick={() => navigate('/signup')}>
             Create account
           </button>
         </div>
@@ -326,28 +318,6 @@ export function LandingPage() {
         </section>
       </section>
 
-      {activeModal ? (
-        <div className='modal-overlay' role='dialog' aria-modal='true'>
-          <div className='modal-card auth-modal-card'>
-            <h4>{activeModal === 'login' ? 'Welcome back' : 'Create your Curio account'}</h4>
-            <p>
-              {activeModal === 'login'
-                ? 'Authentication wiring comes next. For now, continue into the product.'
-                : 'Account setup is coming soon. You can still enter the app right now.'}
-            </p>
-            <input type='email' placeholder='Email' readOnly value='' />
-            <input type='password' placeholder='Password' readOnly value='' />
-            <div className='modal-actions'>
-              <button type='button' className='secondary' onClick={closeModal}>
-                Cancel
-              </button>
-              <button type='button' onClick={continueToHome}>
-                Continue to home
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </main>
   )
 }

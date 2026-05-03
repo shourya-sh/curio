@@ -1,10 +1,11 @@
 #all nodes, usually for plan mode manual updating
 from logger import get_logger
 from fastapi import APIRouter, Depends, HTTPException
-from models.tables import NodeTable
+from models.tables import NodeTable, SessionTable
 from models.node_models import NodeCreate, NodeUpdate, NodeBulkUpdate, NodeRestorePayload
 from sqlalchemy.orm import Session
 from db import get_db
+from auth import get_current_user
 from services import graph_service
 from services.session_identifiers import resolve_session_pk_or_404
 
@@ -13,15 +14,24 @@ router = APIRouter(prefix="/sessions/{session_id}/nodes", tags=["nodes"])
 logger = get_logger("node_router")
 
 
+def _verify_session_owner(db: Session, sid: int, user_id: str):
+    """Raise 404 if the session doesn't belong to the authenticated user."""
+    session = db.query(SessionTable).filter_by(id=sid).first()
+    if not session or str(session.user_id) != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
 @router.get("/")
-def list_nodes(session_id: str, db: Session = Depends(get_db)):
+def list_nodes(session_id: str, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     sid = resolve_session_pk_or_404(session_id, db)
+    _verify_session_owner(db, sid, user_id)
     return db.query(NodeTable).filter_by(session_id=sid).all()
 
 
 @router.get("/{node_id}")
-def get_node(session_id: str, node_id: str, db: Session = Depends(get_db)):
+def get_node(session_id: str, node_id: str, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     sid = resolve_session_pk_or_404(session_id, db)
+    _verify_session_owner(db, sid, user_id)
     node = db.query(NodeTable).filter_by(id=node_id, session_id=sid).first()
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
@@ -29,8 +39,9 @@ def get_node(session_id: str, node_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/")
-def create_node(session_id: str, body: NodeCreate, db: Session = Depends(get_db)):
+def create_node(session_id: str, body: NodeCreate, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     sid = resolve_session_pk_or_404(session_id, db)
+    _verify_session_owner(db, sid, user_id)
     node = graph_service.create_node(
         db,
         session_id=str(sid),
@@ -53,8 +64,9 @@ def create_node(session_id: str, body: NodeCreate, db: Session = Depends(get_db)
 
 
 @router.patch("/{node_id}")
-def update_node(session_id: str, node_id: str, body: NodeUpdate, db: Session = Depends(get_db)):
+def update_node(session_id: str, node_id: str, body: NodeUpdate, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     sid = resolve_session_pk_or_404(session_id, db)
+    _verify_session_owner(db, sid, user_id)
     node = graph_service.update_node(
         db, str(sid), node_id,
         **body.model_dump(exclude_unset=True),
@@ -67,9 +79,10 @@ def update_node(session_id: str, node_id: str, body: NodeUpdate, db: Session = D
 
 
 @router.patch("/")
-def bulk_update_nodes(session_id: str, body: NodeBulkUpdate, db: Session = Depends(get_db)):
+def bulk_update_nodes(session_id: str, body: NodeBulkUpdate, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     """Batch-save dirty nodes in a single request (positions, text edits, etc.)."""
     sid = resolve_session_pk_or_404(session_id, db)
+    _verify_session_owner(db, sid, user_id)
     updated = []
     for item in body.nodes:
         fields = item.model_dump(exclude={"id"}, exclude_unset=True)
@@ -83,8 +96,9 @@ def bulk_update_nodes(session_id: str, body: NodeBulkUpdate, db: Session = Depen
 
 
 @router.delete("/{node_id}")
-def delete_node(session_id: str, node_id: str, db: Session = Depends(get_db)):
+def delete_node(session_id: str, node_id: str, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     sid = resolve_session_pk_or_404(session_id, db)
+    _verify_session_owner(db, sid, user_id)
     if not graph_service.delete_node(db, str(sid), node_id):
         raise HTTPException(status_code=404, detail="Node not found")
     db.commit()
@@ -92,8 +106,9 @@ def delete_node(session_id: str, node_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{node_id}/restore")
-def restore_node(session_id: str, node_id: str, body: NodeRestorePayload, db: Session = Depends(get_db)):
+def restore_node(session_id: str, node_id: str, body: NodeRestorePayload, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     sid = resolve_session_pk_or_404(session_id, db)
+    _verify_session_owner(db, sid, user_id)
     if str(body.node.id) != str(node_id):
         raise HTTPException(status_code=400, detail="Node id mismatch")
     node_dict = body.node.model_dump(exclude_none=True)
