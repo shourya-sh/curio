@@ -10,6 +10,7 @@ import json
 
 from auth import get_current_user
 from encryption import decrypt
+from services.graph_service import verify_session_owner
 from services.rate_limit import limit_ai_prompt
 from services.session_identifiers import allocate_unique_slug, base_slug_for_new_session, resolve_session_pk_or_404
 from services.stream_service import run_agent_stream
@@ -18,14 +19,6 @@ from sqlalchemy import text
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 logger = get_logger("session_router")
-
-
-def _get_user_session_or_404(db: Session, pk: int, user_id: str) -> SessionTable:
-    """Fetch a session by PK and verify it belongs to the authenticated user."""
-    session = db.query(SessionTable).filter_by(id=pk).first()
-    if not session or str(session.user_id) != user_id:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session
 
 
 #create session with title and mode
@@ -64,7 +57,7 @@ def get_session(session_id: str, db: Session = Depends(get_db), user_id: str = D
 @router.patch("/{session_id}")
 def update_session(session_id: str, body: SessionUpdate, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     pk = resolve_session_pk_or_404(session_id, db)
-    session = _get_user_session_or_404(db, pk, user_id)
+    session = verify_session_owner(db, pk, user_id)
     session.title = body.title
     db.commit()
     db.refresh(session)
@@ -74,7 +67,7 @@ def update_session(session_id: str, body: SessionUpdate, db: Session = Depends(g
 @router.delete("/{session_id}")
 def delete_session(session_id: str, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     pk = resolve_session_pk_or_404(session_id, db)
-    session = _get_user_session_or_404(db, pk, user_id)
+    session = verify_session_owner(db, pk, user_id)
     db.delete(session)
     db.commit()
     return {"detail": "deleted"}
@@ -91,7 +84,7 @@ async def session_prompt(
     db_resolve = SessionLocal()
     try:
         pk = resolve_session_pk_or_404(session_id, db_resolve)
-        _get_user_session_or_404(db_resolve, pk, user_id)
+        verify_session_owner(db_resolve, pk, user_id)
     finally:
         db_resolve.close()
     # Look up user's BYOK keys

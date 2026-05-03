@@ -2,7 +2,7 @@ import json
 from starlette.requests import Request
 from sqlalchemy.orm import Session
 from services import message_service
-from services.agents import research_agent, plan_agent
+from services.agents import orchestrator
 from services.token_logging import log_prompt_token_usage
 from logger import get_logger
 
@@ -50,16 +50,12 @@ async def run_agent_stream(
             prompt=prompt,
             source="run_agent_stream",
         )
-        if mode == "research":
-            agent = research_agent.run
-        elif mode == "plan":
-            agent = plan_agent.run
-        else:
+        if mode not in ("research", "plan"):
             yield sse_event("error", {"message": f"Unknown mode: {mode}"})
             return
 
-        # run agent, yielding events as they come
-        async for event in agent(session_id, prompt, db, anchor_node_id=anchor_node_id, api_keys=api_keys):
+        # run agent pipeline, yielding events as they come
+        async for event in orchestrator.run_pipeline(session_id, prompt, db, mode=mode, anchor_node_id=anchor_node_id, api_keys=api_keys):
             # check if client disconnected
             if await request.is_disconnected():
                 logger.info(f"Client disconnected mid-stream session={session_id}")

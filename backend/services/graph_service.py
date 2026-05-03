@@ -1,7 +1,16 @@
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
 from models.tables import NodeTable, NodeLinkTable, SessionTable
 from sqlalchemy.orm import Session
+
+
+def verify_session_owner(db: Session, session_id: int, user_id: str) -> SessionTable:
+    """Fetch a session by PK and verify it belongs to the authenticated user. Returns the session row."""
+    session = db.query(SessionTable).filter_by(id=session_id).first()
+    if not session or str(session.user_id) != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
 
 def touch_session(db: Session, session_id: str) -> None:

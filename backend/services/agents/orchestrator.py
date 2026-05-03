@@ -164,11 +164,3 @@ async def run_pipeline(session_id: str, prompt: str, db: Session, *, mode: str, 
     yield {"type": "message_created", "data": {"role": "system", "content": summary}}
 
 
-async def run_research(session_id: str, prompt: str, db: Session, *, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
-    async for event in run_pipeline(session_id, prompt, db, mode="research", anchor_node_id=anchor_node_id, api_keys=api_keys):
-        yield event
-
-
-async def run_plan(session_id: str, prompt: str, db: Session, *, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
-    async for event in run_pipeline(session_id, prompt, db, mode="plan", anchor_node_id=anchor_node_id, api_keys=api_keys):
-        yield event

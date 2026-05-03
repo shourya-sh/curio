@@ -1,8 +1,0 @@
-from sqlalchemy.orm import Session
-
-from services.agents import orchestrator
-
-async def run(session_id: str, prompt: str, db: Session, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
-    """Run the Gemini-backed plan graph pipeline."""
-    async for event in orchestrator.run_plan(session_id, prompt, db, anchor_node_id=anchor_node_id, api_keys=api_keys):
-        yield event
