@@ -7,7 +7,7 @@ backend/
 ├── main.py                  # FastAPI app, CORS, lifespan, router registration
 ├── db.py                    # SQLAlchemy engine, SessionLocal, schema migrations
 ├── auth.py                  # JWT verification (HS256 + ES256 JWKS)
-├── ai.py                    # AI provider abstraction (Gemini + Azure OpenAI)
+├── ai.py                    # AI provider abstraction (Gemini + Azure OpenAI); supports tools/tool_config for agentic mode
 ├── encryption.py            # Fernet encrypt/decrypt for stored API keys
 ├── logger.py                # Shared logger factory
 ├── prompts.py               # (empty — prompts live in agent modules)
@@ -36,8 +36,10 @@ backend/
 │   ├── token_logging.py     # Prompt + provider token usage logging
 │   │
 │   └── agents/              # AI pipeline modules (see agent-pipeline.md)
-│       ├── orchestrator.py  # Runs pipeline: LLM call -> validate -> layout -> persist -> SSE
-│       ├── single_pass.py   # One Gemini call -> full GraphDraft
+│       ├── orchestrator.py  # Runs pipeline: tool loop (primary) or single pass (fallback) -> persist -> SSE
+│       ├── tool_defs.py     # Gemini function declarations for agentic tools (create_node, create_link, etc.)
+│       ├── tool_loop.py     # Multi-turn agentic loop: LLM calls tools iteratively with safety limits
+│       ├── single_pass.py   # One Gemini call -> full GraphDraft (fallback path)
 │       ├── draft_models.py  # Pydantic: GraphDraft, StructuredGraph, SourceDraft
 │       └── core/
 │           ├── structuring.py   # Layout + color assignment (no LLM)
