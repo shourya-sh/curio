@@ -2814,7 +2814,39 @@ textarea {
   isolation: isolate;
   box-shadow: 0 4px 6px rgba(15, 23, 42, 0.04), 0 16px 34px rgba(36, 55, 104, 0.12);
   border: 2px solid rgba(255, 255, 255, 0.72);
-  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease, filter 0.2s ease;
+  transition:
+    box-shadow 0.2s ease,
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    filter 0.2s ease,
+    left var(--mm-pos-duration, 0s) ease-out,
+    top var(--mm-pos-duration, 0s) ease-out;
+}
+
+.mm-canvas__viewport--animating .mm-orb {
+  --mm-pos-duration: 0.45s;
+}
+
+.mm-orb--dragging {
+  --mm-pos-duration: 0s !important;
+  transition: none !important;
+}
+
+@keyframes mm-orb-fade-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.7); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+.mm-orb--streaming-in {
+  animation: mm-orb-fade-in 0.35s ease-out both;
+}
+
+@keyframes mm-edge-draw {
+  from { stroke-dashoffset: 1000; opacity: 0.3; }
+  to   { stroke-dashoffset: 0; opacity: 0.95; }
+}
+.mm-edge--new {
+  stroke-dasharray: 1000;
+  animation: mm-edge-draw 0.5s ease-out forwards;
 }
 
 .mm-orb::before {
@@ -2948,6 +2980,58 @@ textarea {
   color: #7a86a2;
   margin: 0 0 10px;
   line-height: 1.4;
+}
+
+.mf-detail-text--editable {
+  cursor: text;
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  transition: background 0.15s ease;
+}
+.mf-detail-text--editable:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.mf-detail-edit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #334155;
+  border: 1.5px solid #c7d2e0;
+  border-radius: 8px;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.mf-detail-edit:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.mf-detail-edit-btn {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  border-radius: 4px;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background 0.15s ease;
+}
+.mf-detail-edit-btn:hover {
+  background: rgba(99, 102, 241, 0.15);
 }
 
 .mf-sources-scroll {

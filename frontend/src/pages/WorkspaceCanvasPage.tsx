@@ -27,7 +27,7 @@ import {
   type ResearchSource,
   type SessionPromptEvent,
 } from '../lib/api'
-import { layoutReadableGraph } from '../lib/graphLayout'
+import { layoutReadableGraph, seedNodePosition, layoutReadableGraphLocal } from '../lib/graphLayout'
 import { buildManualLinkPayload, buildManualNodePayload, buildNodeStylePatch } from '../lib/manualGraph'
 import { readNodeRadiusPx } from '../lib/nodeDisplay'
 import { nodeOrbStyle } from '../lib/nodeOrbStyle'
@@ -337,6 +337,16 @@ export function WorkspaceCanvasPage() {
   const promptAbortRef = useRef<AbortController | null>(null)
   const workspacePageMountedRef = useRef(true)
 
+  // --- Node detail editing ---
+  const [editingField, setEditingField] = useState<'summary' | 'details' | 'subtopics' | null>(null)
+  const [editingValue, setEditingValue] = useState('')
+
+  // --- Streaming animation ---
+  const streamingNodeIdsRef = useRef<Set<number>>(new Set())
+  const streamingLinkIdsRef = useRef<Set<number>>(new Set())
+  const streamingLayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [animatePositions, setAnimatePositions] = useState(false)
+
   useEffect(() => {
     workspacePageMountedRef.current = true
     return () => {
@@ -350,6 +360,9 @@ export function WorkspaceCanvasPage() {
       promptAbortRef.current = null
     }
   }, [])
+
+  // Reset editing state when the inspected node changes
+  useEffect(() => { setEditingField(null) }, [panelNodeId, selectedId])
 
   useEffect(() => {
     promptAbortRef.current?.abort()
@@ -547,6 +560,7 @@ export function WorkspaceCanvasPage() {
 
   useEffect(() => {
     if (!workspaceSlug || !session) return
+    if (streaming) return // streaming layout handled by scheduleStreamingLayout
     const st = layoutStateRef.current
     if (st.sid !== workspaceSlug) {
       layoutStateRef.current = { sid: workspaceSlug, signature: '' }
@@ -757,6 +771,7 @@ export function WorkspaceCanvasPage() {
 
   const onDragEnd = useCallback(
     (id: number, x: number, y: number) => {
+      if (id < 0) return // skip persistence for temp optimistic nodes
       const n = session?.nodes.find((o) => o.id === id)
       if (!n) return
       if (Math.abs(n.position_x - x) < 0.01 && Math.abs(n.position_y - y) < 0.01) return
@@ -820,26 +835,50 @@ export function WorkspaceCanvasPage() {
       const before = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
       if (!before) return
       const sid = Number(session.id)
+
+      // Optimistic: add temp link immediately
+      const tempLinkId = -(Date.now())
+      const tempLink: LinkOut = {
+        id: tempLinkId,
+        session_id: sid,
+        parent_id: fromId,
+        child_id: toId,
+        color: null,
+        line_style: 'solid',
+        created_at: new Date().toISOString(),
+      }
+      const optimistic = addLinkDeterministic(cloneSession(before), tempLink)
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], optimistic)
+      setConnectMode(false)
+
       void mutLink
         .mutateAsync({ sid, body: payload })
         .then((createdLink) => {
-          const beforeSnapshot = cloneSession(before)
-          const afterSnapshot = addLinkDeterministic(beforeSnapshot, createdLink)
-          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], afterSnapshot)
-          setConnectMode(false)
+          // Swap temp link for real link
+          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) => {
+            if (!current) return current
+            return {
+              ...current,
+              links: current.links.map((l) => (l.id === tempLinkId ? createdLink : l)),
+            }
+          })
           commitHistoryEntry({
-            before: beforeSnapshot,
-            after: afterSnapshot,
+            before,
+            after: queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])!,
             syncForward: () => restoreLink(sid, createdLink),
             syncBackward: () => deleteLink(sid, createdLink.id),
           })
         })
         .catch((error: Error) => {
+          // Remove temp link on failure
+          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) => {
+            if (!current) return current
+            return { ...current, links: current.links.filter((l) => l.id !== tempLinkId) }
+          })
           setErrorBanner(error.message)
-          invalidateSession()
         })
     },
-    [commitHistoryEntry, invalidateSession, mutLink, queryClient, session, workspaceSlug],
+    [commitHistoryEntry, mutLink, queryClient, session, workspaceSlug],
   )
 
   const onPlaceNodeComplete = useCallback(
@@ -853,26 +892,80 @@ export function WorkspaceCanvasPage() {
       })
       const before = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
       if (!before) return
+
+      // Optimistic: add temp node immediately
+      const tempId = -(Date.now())
+      const tempNode: NodeOut = {
+        id: tempId,
+        session_id: Number(session.id),
+        topic: body.topic ?? 'New node',
+        summary: body.summary ?? null,
+        details: body.details ?? null,
+        subtopics: body.subtopics ?? { radiusPx },
+        depth: body.depth ?? 0,
+        position_x: cx,
+        position_y: cy,
+        original_position_x: cx,
+        original_position_y: cy,
+        node_type: body.node_type ?? 'manual',
+        color: body.color ?? null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      const optimistic = addNodeDeterministic(cloneSession(before), tempNode)
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], optimistic)
+
       void mutCreateNode
         .mutateAsync({ sid: Number(session.id), body })
         .then((createdNode) => {
-          const beforeSnapshot = cloneSession(before)
-          const afterSnapshot = addNodeDeterministic(beforeSnapshot, createdNode)
-          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], afterSnapshot)
+          // Swap temp node for real node
+          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) => {
+            if (!current) return current
+            return {
+              ...current,
+              nodes: current.nodes.map((n) => (n.id === tempId ? createdNode : n)),
+            }
+          })
           commitHistoryEntry({
-            before: beforeSnapshot,
-            after: afterSnapshot,
+            before,
+            after: queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])!,
             syncForward: () => restoreNode(Number(session.id), createdNode.id, { node: createdNode, links: [] }),
             syncBackward: () => deleteNode(Number(session.id), createdNode.id),
           })
         })
         .catch((error: Error) => {
+          // Remove temp node on failure
+          queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) => {
+            if (!current) return current
+            return { ...current, nodes: current.nodes.filter((n) => n.id !== tempId) }
+          })
           setErrorBanner(error.message)
-          invalidateSession()
         })
     },
-    [commitHistoryEntry, invalidateSession, mutCreateNode, queryClient, session, workspaceSlug],
+    [commitHistoryEntry, mutCreateNode, queryClient, session, workspaceSlug],
   )
+
+  // Debounced incremental layout during streaming (50ms)
+  const scheduleStreamingLayout = useCallback(() => {
+    if (streamingLayoutTimerRef.current) clearTimeout(streamingLayoutTimerRef.current)
+    streamingLayoutTimerRef.current = setTimeout(() => {
+      streamingLayoutTimerRef.current = null
+      const current = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
+      if (!current || current.nodes.length === 0) return
+      const posMap = layoutReadableGraphLocal(current.nodes, current.links)
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          nodes: prev.nodes.map((n) => {
+            const pos = posMap.get(n.id)
+            if (!pos) return n
+            return { ...n, position_x: pos.x, position_y: pos.y }
+          }),
+        }
+      })
+    }, 50)
+  }, [queryClient, workspaceSlug])
 
   const consumePromptStreamEvent = useCallback(
     (event: SessionPromptEvent) => {
@@ -899,9 +992,19 @@ export function WorkspaceCanvasPage() {
       }
       if (event.type === 'node_created') {
         const node = event.data as NodeOut
-        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
-          current ? addNodeDeterministic(current, node) : current,
-        )
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) => {
+          if (!current) return current
+          // Seed position if node arrives at (0,0)
+          let seeded = node
+          if (Math.abs(node.position_x) < 1 && Math.abs(node.position_y) < 1) {
+            const parentLink = current.links.find((l) => l.child_id === node.id)
+            const pos = seedNodePosition(parentLink?.parent_id, current.nodes, current.links)
+            seeded = { ...node, position_x: pos.x, position_y: pos.y }
+          }
+          return addNodeDeterministic(current, seeded)
+        })
+        streamingNodeIdsRef.current.add(node.id)
+        scheduleStreamingLayout()
         return
       }
       if (event.type === 'link_created') {
@@ -909,6 +1012,8 @@ export function WorkspaceCanvasPage() {
         queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
           current ? addLinkDeterministic(current, link) : current,
         )
+        streamingLinkIdsRef.current.add(link.id)
+        scheduleStreamingLayout()
         return
       }
       if (event.type === 'message_created') {
@@ -938,7 +1043,7 @@ export function WorkspaceCanvasPage() {
         setErrorBanner(msg)
       }
     },
-    [queryClient, workspaceSlug],
+    [queryClient, workspaceSlug, scheduleStreamingLayout],
   )
 
   const runSessionPrompt = useCallback(
@@ -956,6 +1061,23 @@ export function WorkspaceCanvasPage() {
           consumePromptStreamEvent,
           { signal: ac.signal },
         )
+        // Final layout pass after streaming completes
+        const finalSession = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
+        if (finalSession && finalSession.nodes.length > 0) {
+          const items = layoutReadableGraph(finalSession.nodes, finalSession.links)
+          if (items.length > 0) {
+            void bulkUpdateNodes(session.id, { nodes: items }).then(() => {
+              void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
+            })
+          }
+        }
+        setFitContentNonce((x) => x + 1)
+        // Enable position transitions briefly for final glide
+        setAnimatePositions(true)
+        setTimeout(() => setAnimatePositions(false), 600)
+        // Clear streaming tracking sets
+        streamingNodeIdsRef.current = new Set()
+        streamingLinkIdsRef.current = new Set()
         invalidateSession()
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
@@ -1470,6 +1592,9 @@ export function WorkspaceCanvasPage() {
                 pendingPosition={pendingPos}
                 fitContentNonce={fitContentNonce}
                 onFitView={handleFitView}
+                animatePositions={animatePositions}
+                streamingNodeIds={streamingNodeIdsRef.current}
+                newLinkIds={streamingLinkIdsRef.current}
               />
               {focusedNode ? (
                 <div
@@ -1723,15 +1848,92 @@ export function WorkspaceCanvasPage() {
                       <>
                         <section className='mf-detail-block'>
                           <h3>{copy.summaryLabel}</h3>
-                          <p className='mf-detail-text'>{panelNode.summary || 'No summary saved yet.'}</p>
+                          {editingField === 'summary' ? (
+                            <textarea
+                              className='mf-detail-edit'
+                              value={editingValue}
+                              onChange={(e) => setEditingValue(e.target.value)}
+                              onBlur={() => {
+                                applyTrackedNodePatch(panelNode.id, { summary: editingValue })
+                                setEditingField(null)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur() }
+                                if (e.key === 'Escape') { setEditingField(null) }
+                              }}
+                              autoFocus
+                              rows={3}
+                            />
+                          ) : (
+                            <p
+                              className='mf-detail-text mf-detail-text--editable'
+                              onClick={() => { setEditingField('summary'); setEditingValue(panelNode.summary || '') }}
+                            >
+                              {panelNode.summary || 'No summary saved yet.'}
+                            </p>
+                          )}
                         </section>
                         <section className='mf-detail-block'>
                           <h3>{copy.detailsLabel}</h3>
-                          <p className='mf-detail-text'>{panelNode.details || copy.emptyDetails}</p>
+                          {editingField === 'details' ? (
+                            <textarea
+                              className='mf-detail-edit'
+                              value={editingValue}
+                              onChange={(e) => setEditingValue(e.target.value)}
+                              onBlur={() => {
+                                applyTrackedNodePatch(panelNode.id, { details: editingValue })
+                                setEditingField(null)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur() }
+                                if (e.key === 'Escape') { setEditingField(null) }
+                              }}
+                              autoFocus
+                              rows={5}
+                            />
+                          ) : (
+                            <p
+                              className='mf-detail-text mf-detail-text--editable'
+                              onClick={() => { setEditingField('details'); setEditingValue(panelNode.details || '') }}
+                            >
+                              {panelNode.details || copy.emptyDetails}
+                            </p>
+                          )}
                         </section>
                         <section className='mf-detail-block'>
-                          <h3>{copy.subtopicsLabel}</h3>
-                          {panelSubtopics.length ? (
+                          <h3>
+                            {copy.subtopicsLabel}
+                            {Array.isArray(panelNode.subtopics) && !('radiusPx' in (panelNode.subtopics as object)) && editingField !== 'subtopics' ? (
+                              <button
+                                type='button'
+                                className='mf-detail-edit-btn'
+                                onClick={() => {
+                                  setEditingField('subtopics')
+                                  setEditingValue(panelSubtopics.join('\n'))
+                                }}
+                              >
+                                Edit
+                              </button>
+                            ) : null}
+                          </h3>
+                          {editingField === 'subtopics' ? (
+                            <textarea
+                              className='mf-detail-edit'
+                              value={editingValue}
+                              onChange={(e) => setEditingValue(e.target.value)}
+                              onBlur={() => {
+                                const lines = editingValue.split('\n').map(s => s.trim()).filter(Boolean)
+                                applyTrackedNodePatch(panelNode.id, { subtopics: lines })
+                                setEditingField(null)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') { setEditingField(null) }
+                              }}
+                              autoFocus
+                              rows={6}
+                              placeholder='One subtopic per line'
+                            />
+                          ) : panelSubtopics.length ? (
                             <ul className='mf-node-notes'>
                               {panelSubtopics.map((item, index) => (
                                 <li key={`${item}-${index}`}>{item}</li>

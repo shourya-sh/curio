@@ -203,6 +203,99 @@ export function layoutReadableGraph(nodes: NodeOut[], links: LinkOut[]): NodeBul
 }
 
 /**
+ * Quick seed position for a newly streamed node.
+ * No BFS — just parent lookup + child count for offset.
+ */
+export function seedNodePosition(
+  parentId: number | null | undefined,
+  nodes: NodeOut[],
+  links: LinkOut[],
+): { x: number; y: number } {
+  if (!parentId) return { x: CANVAS_W / 2, y: CANVAS_H / 2 }
+  const parent = nodes.find((n) => n.id === parentId)
+  if (!parent) return { x: CANVAS_W / 2, y: CANVAS_H / 2 }
+  const siblingCount = links.filter((l) => l.parent_id === parentId).length
+  return {
+    x: snapCoord(Math.min(CANVAS_W - EDGE_MARGIN, parent.position_x + LAYER_GAP)),
+    y: snapCoord(Math.max(EDGE_MARGIN, Math.min(CANVAS_H - EDGE_MARGIN, parent.position_y + BODY_GAP * siblingCount))),
+  }
+}
+
+/**
+ * Run the full layered layout algorithm but return an id→position map
+ * instead of NodeBulkItem[]. Used for in-memory layout during streaming
+ * (no API call needed).
+ */
+export function layoutReadableGraphLocal(
+  nodes: NodeOut[],
+  links: LinkOut[],
+): Map<number, { x: number; y: number }> {
+  const result = new Map<number, { x: number; y: number }>()
+  if (nodes.length === 0) return result
+
+  const { layer, order } = rootAndLayerOrder(nodes, links)
+  const maxLayer = Math.max(0, ...nodes.map((node) => layer.get(node.id) ?? Math.max(0, node.depth)))
+  const layerCount = maxLayer + 1
+  const columns = Math.max(1, layerCount)
+  const maxWidthByLayer = new Map<number, number>()
+  for (const node of nodes) {
+    const l = layer.get(node.id) ?? Math.max(0, node.depth)
+    maxWidthByLayer.set(l, Math.max(maxWidthByLayer.get(l) ?? 0, readNodeBoxPx(node).width))
+  }
+
+  const columnCenters: number[] = []
+  if (columns === 1) {
+    columnCenters.push(CANVAS_W / 2)
+  } else {
+    let cursor = EDGE_MARGIN + (maxWidthByLayer.get(0) ?? 120) / 2
+    columnCenters.push(cursor)
+    for (let l = 1; l < columns; l++) {
+      const prevHalf = (maxWidthByLayer.get(l - 1) ?? 120) / 2
+      const half = (maxWidthByLayer.get(l) ?? 120) / 2
+      cursor += prevHalf + half + LAYER_GAP
+      columnCenters.push(cursor)
+    }
+    const last = columnCenters[columnCenters.length - 1] ?? CANVAS_W / 2
+    const overflow = last + (maxWidthByLayer.get(columns - 1) ?? 120) / 2 + EDGE_MARGIN - CANVAS_W
+    if (overflow > 0) {
+      for (let i = 0; i < columnCenters.length; i++) columnCenters[i] = (columnCenters[i] ?? 0) - overflow / 2
+    }
+  }
+
+  const items: LayoutNode[] = nodes.map((node) => {
+    const box = readNodeBoxPx(node)
+    const l = layer.get(node.id) ?? Math.max(0, node.depth)
+    return {
+      node,
+      width: box.width,
+      height: box.height,
+      x: clampCenter(columnCenters[l] ?? CANVAS_W / 2, box.width / 2, CANVAS_W),
+      y: CANVAS_H / 2,
+      layer: l,
+      order: order.get(node.id) ?? node.id,
+    }
+  })
+
+  for (let l = 0; l <= maxLayer; l++) {
+    const col = items.filter((item) => item.layer === l).sort((a, b) => a.order - b.order)
+    if (!col.length) continue
+    const totalHeight = col.reduce((sum, item) => sum + item.height, 0) + BODY_GAP * (col.length - 1)
+    let y = Math.max(EDGE_MARGIN, (CANVAS_H - totalHeight) / 2)
+    for (const item of col) {
+      item.y = clampCenter(y + item.height / 2, item.height / 2, CANVAS_H)
+      y += item.height + BODY_GAP
+    }
+  }
+
+  resolveBodyOverlaps(items)
+
+  for (const item of items) {
+    result.set(item.node.id, { x: snapCoord(item.x), y: snapCoord(item.y) })
+  }
+  return result
+}
+
+/**
  * Only fix true stacks: multiple nodes sharing the exact same coordinates,
  * or a single node still at the origin. Does NOT group nearby rounded coordinates
  * (that was causing nodes to jump apart after every save).

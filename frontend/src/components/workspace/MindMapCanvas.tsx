@@ -77,6 +77,12 @@ type Props = {
   fitContentNonce?: number
   /** Reset nodes to canonical positions, persist, then parent bumps `fitContentNonce`. */
   onFitView?: () => void
+  /** Enable CSS position transitions (set true during/after streaming layout). */
+  animatePositions?: boolean
+  /** Node IDs currently being streamed in (for fade-in animation). */
+  streamingNodeIds?: Set<number>
+  /** Link IDs recently created (for edge draw-in animation). */
+  newLinkIds?: Set<number>
 }
 
 export function MindMapCanvas({
@@ -95,6 +101,9 @@ export function MindMapCanvas({
   onSelectLink,
   fitContentNonce = 0,
   onFitView,
+  animatePositions = false,
+  streamingNodeIds,
+  newLinkIds,
 }: Props) {
   const boardRef = useRef<HTMLDivElement | null>(null)
   const hitRef = useRef<HTMLDivElement | null>(null)
@@ -550,7 +559,7 @@ export function MindMapCanvas({
     >
       <div className='mm-canvas__vignette' aria-hidden />
       <div
-        className='mm-canvas__viewport'
+        className={`mm-canvas__viewport${animatePositions ? ' mm-canvas__viewport--animating' : ''}`}
         style={{
           transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
           width: `${CANVAS_W}px`,
@@ -616,7 +625,7 @@ export function MindMapCanvas({
               />
               <path
                 d={d}
-                className={`mm-edge mm-edge--${style}${isSel ? ' mm-edge--selected' : ''}`}
+                className={`mm-edge mm-edge--${style}${isSel ? ' mm-edge--selected' : ''}${newLinkIds?.has(link.id) ? ' mm-edge--new' : ''}`}
                 style={!isSel && link.color ? { stroke: link.color } : undefined}
                 pointerEvents='none'
               />
@@ -659,6 +668,8 @@ export function MindMapCanvas({
         const top = `${p.y}px`
         const wireFrom = connectMode && wireDraft?.fromId === n.id
         const wireTarget = connectMode && wireTargetId === n.id
+        const isDragging = drag?.id === n.id
+        const isStreamingIn = streamingNodeIds?.has(n.id)
         return (
           <div
             key={n.id}
@@ -666,7 +677,9 @@ export function MindMapCanvas({
             tabIndex={0}
             className={`mm-orb${isSel ? ' mm-orb--selected' : ''}${wireFrom ? ' mm-orb--wire-from' : ''}${
               wireTarget ? ' mm-orb--wire-target' : ''
-            }${connectMode && !placeNodeMode ? ' mm-orb--connect-target' : ''}`}
+            }${connectMode && !placeNodeMode ? ' mm-orb--connect-target' : ''}${
+              isDragging ? ' mm-orb--dragging' : ''
+            }${isStreamingIn ? ' mm-orb--streaming-in' : ''}`}
             style={{
               left,
               top,
