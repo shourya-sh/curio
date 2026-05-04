@@ -882,6 +882,21 @@ export function WorkspaceCanvasPage() {
       if (event.type === 'done') {
         return
       }
+      if (event.type === 'tool_used') {
+        const { tool, args } = event.data as { tool: string; args?: Record<string, unknown> }
+        const label = args?.topic ?? args?.summary ?? ''
+        const display = label ? `${tool}("${label}")` : tool
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            role: 'system' as const,
+            content: `\u{1F527} ${display}`,
+            timestamp: formatChatTimestamp(new Date().toISOString()),
+          },
+        ])
+        return
+      }
       if (event.type === 'node_created') {
         const node = event.data as NodeOut
         queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>

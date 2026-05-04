@@ -215,7 +215,7 @@ def _candidate_models() -> list[str]:
 async def _try_one_model(
     *,
     model: str,
-    contents: str,
+    contents: str | list,
     config: Any,
     api_keys: list[str] | None = None,
 ) -> tuple[Any | None, BaseException | None, dict[str, int]]:
@@ -270,9 +270,11 @@ async def _try_one_model(
 
 async def _generate_gemini(
     *,
-    contents: str,
+    contents: str | list,
     system_prompt: str,
     response_mime_type: str | None = None,
+    tools: list | None = None,
+    tool_config: Any | None = None,
     api_keys: list[str] | None = None,
 ) -> Any:
     """Try the configured model across all live keys; rotate to fallback models if the
@@ -292,6 +294,10 @@ async def _generate_gemini(
     cfg_kwargs: dict[str, Any] = {"system_instruction": system_prompt}
     if response_mime_type:
         cfg_kwargs["response_mime_type"] = response_mime_type
+    if tools:
+        cfg_kwargs["tools"] = tools
+    if tool_config:
+        cfg_kwargs["tool_config"] = tool_config
     config = genai.types.GenerateContentConfig(**cfg_kwargs)
 
     models_tried: list[str] = []

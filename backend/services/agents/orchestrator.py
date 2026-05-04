@@ -1,16 +1,23 @@
 """AI graph pipeline: all database writes go through ``graph_service`` and ``message_service``."""
 
+import os
+
 from sqlalchemy.orm import Session
 
+from logger import get_logger
 from models.session_models import NodeOut, LinkOut, MessageOut
 from models.tables import NodeTable
 from services import graph_service, message_service
-from services.agents import single_pass
+from services.agents import single_pass, tool_loop
 from services.agents.core import structuring, validation
 from services.agents.draft_models import GraphDraft, SourceDraft
 
+logger = get_logger("orchestrator")
+
 MAX_RESEARCH_NODES = 14
 MAX_PLAN_NODES = 12
+
+USE_TOOL_LOOP = os.getenv("USE_TOOL_LOOP", "true").lower() in ("true", "1", "yes")
 
 
 def _resolved_sources_payload(
@@ -61,12 +68,9 @@ async def _plan_draft(session_id: int, prompt: str, anchor: NodeTable | None, ap
     return validation.filter_draft(draft, mode="plan", max_nodes=MAX_PLAN_NODES, max_fanout=5)
 
 
-async def run_pipeline(session_id: int, prompt: str, db: Session, *, mode: str, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
-    # persist user message
-    user_message = message_service.create_user_message(db, session_id, prompt)
-    yield {"type": "message_created", "data": MessageOut.model_validate(user_message).model_dump(mode="json")}
-
-    anchor = graph_service.find_expansion_anchor(db, session_id, anchor_node_id)
+async def _run_single_pass(session_id: int, prompt: str, db: Session, *, mode: str, anchor: NodeTable | None, api_keys: list[str] | None = None):
+    """Original single-pass pipeline (kept as fallback)."""
+    max_nodes = MAX_PLAN_NODES if mode == "plan" else MAX_RESEARCH_NODES
     if mode == "plan":
         draft = await _plan_draft(session_id, prompt, anchor, api_keys=api_keys)
     else:
@@ -143,3 +147,32 @@ async def run_pipeline(session_id: int, prompt: str, db: Session, *, mode: str, 
     )
     sys_message = message_service.create_message(db, session_id, "system", summary)
     yield {"type": "message_created", "data": MessageOut.model_validate(sys_message).model_dump(mode="json")}
+
+
+async def run_pipeline(session_id: int, prompt: str, db: Session, *, mode: str, anchor_node_id: int | None = None, api_keys: list[str] | None = None):
+    # persist user message
+    user_message = message_service.create_user_message(db, session_id, prompt)
+    yield {"type": "message_created", "data": MessageOut.model_validate(user_message).model_dump(mode="json")}
+
+    anchor = graph_service.find_expansion_anchor(db, session_id, anchor_node_id)
+    max_nodes = MAX_PLAN_NODES if mode == "plan" else MAX_RESEARCH_NODES
+
+    if USE_TOOL_LOOP:
+        try:
+            async for event in tool_loop.run(
+                session_id=session_id,
+                prompt=prompt,
+                mode=mode,
+                db=db,
+                anchor=anchor,
+                max_nodes=max_nodes,
+                api_keys=api_keys,
+            ):
+                yield event
+            return
+        except Exception as e:
+            logger.error("Tool loop failed, falling back to single_pass: %s", e, exc_info=True)
+
+    # Fallback: single-pass pipeline
+    async for event in _run_single_pass(session_id, prompt, db, mode=mode, anchor=anchor, api_keys=api_keys):
+        yield event

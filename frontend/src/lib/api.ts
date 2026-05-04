@@ -342,6 +342,7 @@ export interface ResearchSource {
 
 export type SessionPromptEvent =
   | { type: 'status'; data: { message?: string } }
+  | { type: 'tool_used'; data: { tool: string; args?: Record<string, unknown> } }
   | { type: 'node_created'; data: NodeOut }
   | { type: 'link_created'; data: LinkOut }
   | { type: 'message_created'; data: MessageOut }
