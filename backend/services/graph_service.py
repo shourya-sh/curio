@@ -103,6 +103,7 @@ def create_node(
             child_id=node.id,
         )
         db.add(link)
+        db.flush()
 
     touch_session(db, session_id)
     return node

@@ -20,14 +20,13 @@ import {
   type LinkLineStyle,
   type LinkOut,
   type LinkUpdatePayload,
-  type NodeBulkItem,
   type NodeOut,
   type SessionDetail,
   type MessageOut,
   type ResearchSource,
   type SessionPromptEvent,
 } from '../lib/api'
-import { seedNodePosition } from '../lib/graphLayout'
+
 import { buildManualLinkPayload, buildManualNodePayload, buildNodeStylePatch } from '../lib/manualGraph'
 import { readNodeRadiusPx } from '../lib/nodeDisplay'
 import { nodeOrbStyle } from '../lib/nodeOrbStyle'
@@ -359,6 +358,7 @@ export function WorkspaceCanvasPage() {
       if (dirty.size > 0) {
         const items = Array.from(dirty.entries()).map(([id, pos]) => ({
           id, position_x: pos.x, position_y: pos.y,
+          original_position_x: pos.x, original_position_y: pos.y,
         }))
         dirtyPositionsRef.current = new Map()
         const sid = sessionQuery.data?.id
@@ -759,7 +759,11 @@ export function WorkspaceCanvasPage() {
     const dirty = dirtyPositionsRef.current
     if (dirty.size === 0) return
     const items = Array.from(dirty.entries()).map(([id, pos]) => ({
-      id, position_x: pos.x, position_y: pos.y,
+      id,
+      position_x: pos.x,
+      position_y: pos.y,
+      original_position_x: pos.x,
+      original_position_y: pos.y,
     }))
     dirtyPositionsRef.current = new Map()
     await bulkUpdateNodes(session.id, { nodes: items }).catch((e: Error) => {
@@ -785,40 +789,9 @@ export function WorkspaceCanvasPage() {
   )
 
   const handleFitView = useCallback(() => {
-    if (!session) return
-    const sid = Number(session.id)
-    const before = cloneSession(session)
-    const after: SessionDetail = {
-      ...session,
-      nodes: session.nodes.map((n) => {
-        const ox = n.original_position_x ?? n.position_x
-        const oy = n.original_position_y ?? n.position_y
-        if (Math.abs(n.position_x - ox) < 0.01 && Math.abs(n.position_y - oy) < 0.01) return n
-        return { ...n, position_x: ox, position_y: oy }
-      }),
-    }
-    const forwardItems: NodeBulkItem[] = before.nodes.flatMap((n) => {
-      const t = after.nodes.find((x) => x.id === n.id)
-      if (!t) return []
-      if (Math.abs(n.position_x - t.position_x) < 0.01 && Math.abs(n.position_y - t.position_y) < 0.01) return []
-      return [{ id: n.id, position_x: t.position_x, position_y: t.position_y }]
-    })
-    if (forwardItems.length > 0) {
-      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], after)
-      setPendingPos(new Map())
-      const backwardItems: NodeBulkItem[] = forwardItems.map((f) => {
-        const o = before.nodes.find((x) => x.id === f.id)!
-        return { id: o.id, position_x: o.position_x, position_y: o.position_y }
-      })
-      commitHistoryEntry({
-        before,
-        after,
-        syncForward: () => bulkUpdateNodes(sid, { nodes: forwardItems }),
-        syncBackward: () => bulkUpdateNodes(sid, { nodes: backwardItems }),
-      })
-    }
+    // Just zoom-to-fit the canvas without resetting node positions
     setFitContentNonce((x) => x + 1)
-  }, [session, workspaceSlug, queryClient, commitHistoryEntry])
+  }, [])
 
   const onConnectWire = useCallback(
     (fromId: number, toId: number) => {
@@ -965,17 +938,9 @@ export function WorkspaceCanvasPage() {
       }
       if (event.type === 'node_created') {
         const node = event.data as NodeOut
-        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) => {
-          if (!current) return current
-          // Seed position if node arrives at (0,0)
-          let seeded = node
-          if (Math.abs(node.position_x) < 1 && Math.abs(node.position_y) < 1) {
-            const parentLink = current.links.find((l) => l.child_id === node.id)
-            const pos = seedNodePosition(parentLink?.parent_id, current.nodes, current.links)
-            seeded = { ...node, position_x: pos.x, position_y: pos.y }
-          }
-          return addNodeDeterministic(current, seeded)
-        })
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+          current ? addNodeDeterministic(current, node) : current,
+        )
         streamingNodeIdsRef.current.add(node.id)
         return
       }
