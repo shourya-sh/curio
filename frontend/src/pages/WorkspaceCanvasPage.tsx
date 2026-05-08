@@ -27,7 +27,7 @@ import {
   type ResearchSource,
   type SessionPromptEvent,
 } from '../lib/api'
-import { layoutReadableGraph, seedNodePosition, layoutReadableGraphLocal } from '../lib/graphLayout'
+import { seedNodePosition } from '../lib/graphLayout'
 import { buildManualLinkPayload, buildManualNodePayload, buildNodeStylePatch } from '../lib/manualGraph'
 import { readNodeRadiusPx } from '../lib/nodeDisplay'
 import { nodeOrbStyle } from '../lib/nodeOrbStyle'
@@ -324,7 +324,7 @@ export function WorkspaceCanvasPage() {
   const [renameDraft, setRenameDraft] = useState('')
   const [stylePopPlacement, setStylePopPlacement] = useState<'top' | 'bottom'>('top')
   const [stylePopPos, setStylePopPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
-  const layoutStateRef = useRef<{ sid: string; signature: string }>({ sid: '', signature: '' })
+
   const syncChainRef = useRef<Promise<void>>(Promise.resolve())
   const historyRef = useRef<HistoryEntry[]>([])
   const historyIndexRef = useRef(-1)
@@ -336,6 +336,8 @@ export function WorkspaceCanvasPage() {
   const [linkPopPos, setLinkPopPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
   const promptAbortRef = useRef<AbortController | null>(null)
   const workspacePageMountedRef = useRef(true)
+  const dirtyPositionsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const dirtyFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // --- Node detail editing ---
   const [editingField, setEditingField] = useState<'summary' | 'details' | 'subtopics' | null>(null)
@@ -344,13 +346,24 @@ export function WorkspaceCanvasPage() {
   // --- Streaming animation ---
   const streamingNodeIdsRef = useRef<Set<number>>(new Set())
   const streamingLinkIdsRef = useRef<Set<number>>(new Set())
-  const streamingLayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const [animatePositions, setAnimatePositions] = useState(false)
 
   useEffect(() => {
     workspacePageMountedRef.current = true
     return () => {
       workspacePageMountedRef.current = false
+      // Flush any pending dirty positions on unmount
+      if (dirtyFlushTimerRef.current) clearTimeout(dirtyFlushTimerRef.current)
+      const dirty = dirtyPositionsRef.current
+      if (dirty.size > 0) {
+        const items = Array.from(dirty.entries()).map(([id, pos]) => ({
+          id, position_x: pos.x, position_y: pos.y,
+        }))
+        dirtyPositionsRef.current = new Map()
+        const sid = sessionQuery.data?.id
+        if (sid) void bulkUpdateNodes(sid, { nodes: items }).catch(() => {})
+      }
     }
   }, [])
 
@@ -558,34 +571,6 @@ export function WorkspaceCanvasPage() {
     },
   })
 
-  useEffect(() => {
-    if (!workspaceSlug || !session) return
-    if (streaming) return // streaming layout handled by scheduleStreamingLayout
-    const st = layoutStateRef.current
-    if (st.sid !== workspaceSlug) {
-      layoutStateRef.current = { sid: workspaceSlug, signature: '' }
-    }
-    const signature = [
-      session.nodes.map((n) => `${n.id}:${n.topic}:${n.depth}:${n.position_x}:${n.position_y}:${n.original_position_x ?? ''}:${n.original_position_y ?? ''}`).join('|'),
-      session.links.map((l) => `${l.parent_id}>${l.child_id}`).join('|'),
-    ].join('::')
-    if (layoutStateRef.current.signature === signature) return
-    layoutStateRef.current.signature = signature
-    const items = layoutReadableGraph(session.nodes, session.links)
-    if (items.length === 0) {
-      return
-    }
-    void bulkUpdateNodes(session.id, { nodes: items })
-      .then(() => {
-        setErrorBanner(null)
-        setFitContentNonce((x) => x + 1)
-        void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
-      })
-      .catch((e: Error) => {
-        setErrorBanner(e.message)
-        layoutStateRef.current.signature = ''
-      })
-  }, [workspaceSlug, session, queryClient])
 
   useEffect(() => {
     if (sessionQuery.error) {
@@ -769,25 +754,34 @@ export function WorkspaceCanvasPage() {
     [commitHistoryEntry, mutUpdateLink, queryClient, session, workspaceSlug],
   )
 
+  const flushDirtyPositions = useCallback(async () => {
+    if (!session) return
+    const dirty = dirtyPositionsRef.current
+    if (dirty.size === 0) return
+    const items = Array.from(dirty.entries()).map(([id, pos]) => ({
+      id, position_x: pos.x, position_y: pos.y,
+    }))
+    dirtyPositionsRef.current = new Map()
+    await bulkUpdateNodes(session.id, { nodes: items }).catch((e: Error) => {
+      setErrorBanner(e.message)
+    })
+  }, [session])
+
   const onDragEnd = useCallback(
     (id: number, x: number, y: number) => {
-      if (id < 0) return // skip persistence for temp optimistic nodes
+      if (id < 0) return
       const n = session?.nodes.find((o) => o.id === id)
       if (!n) return
       if (Math.abs(n.position_x - x) < 0.01 && Math.abs(n.position_y - y) < 0.01) return
-      setPendingPos((m) => {
-        const nmap = new Map(m)
-        nmap.set(id, { x, y })
-        return nmap
-      })
-      applyTrackedNodePatch(id, { position_x: x, position_y: y })
-      setPendingPos((m) => {
-        const nmap = new Map(m)
-        nmap.delete(id)
-        return nmap
-      })
+      // Optimistic local update (no history entry)
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (cur) =>
+        cur ? applyNodePatchDeterministic(cur, id, { position_x: x, position_y: y }) : cur,
+      )
+      dirtyPositionsRef.current.set(id, { x, y })
+      if (dirtyFlushTimerRef.current) clearTimeout(dirtyFlushTimerRef.current)
+      dirtyFlushTimerRef.current = setTimeout(flushDirtyPositions, 500)
     },
-    [applyTrackedNodePatch, session?.nodes],
+    [flushDirtyPositions, queryClient, session?.nodes, workspaceSlug],
   )
 
   const handleFitView = useCallback(() => {
@@ -945,27 +939,6 @@ export function WorkspaceCanvasPage() {
     [commitHistoryEntry, mutCreateNode, queryClient, session, workspaceSlug],
   )
 
-  // Debounced incremental layout during streaming (50ms)
-  const scheduleStreamingLayout = useCallback(() => {
-    if (streamingLayoutTimerRef.current) clearTimeout(streamingLayoutTimerRef.current)
-    streamingLayoutTimerRef.current = setTimeout(() => {
-      streamingLayoutTimerRef.current = null
-      const current = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
-      if (!current || current.nodes.length === 0) return
-      const posMap = layoutReadableGraphLocal(current.nodes, current.links)
-      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          nodes: prev.nodes.map((n) => {
-            const pos = posMap.get(n.id)
-            if (!pos) return n
-            return { ...n, position_x: pos.x, position_y: pos.y }
-          }),
-        }
-      })
-    }, 50)
-  }, [queryClient, workspaceSlug])
 
   const consumePromptStreamEvent = useCallback(
     (event: SessionPromptEvent) => {
@@ -1004,7 +977,6 @@ export function WorkspaceCanvasPage() {
           return addNodeDeterministic(current, seeded)
         })
         streamingNodeIdsRef.current.add(node.id)
-        scheduleStreamingLayout()
         return
       }
       if (event.type === 'link_created') {
@@ -1013,7 +985,6 @@ export function WorkspaceCanvasPage() {
           current ? addLinkDeterministic(current, link) : current,
         )
         streamingLinkIdsRef.current.add(link.id)
-        scheduleStreamingLayout()
         return
       }
       if (event.type === 'message_created') {
@@ -1043,7 +1014,7 @@ export function WorkspaceCanvasPage() {
         setErrorBanner(msg)
       }
     },
-    [queryClient, workspaceSlug, scheduleStreamingLayout],
+    [queryClient, workspaceSlug],
   )
 
   const runSessionPrompt = useCallback(
@@ -1055,22 +1026,13 @@ export function WorkspaceCanvasPage() {
       const ac = new AbortController()
       promptAbortRef.current = ac
       try {
+        await flushDirtyPositions()
         await postSessionPromptStream(
           session.id,
           { prompt, anchor_node_id: anchorNodeId },
           consumePromptStreamEvent,
           { signal: ac.signal },
         )
-        // Final layout pass after streaming completes
-        const finalSession = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
-        if (finalSession && finalSession.nodes.length > 0) {
-          const items = layoutReadableGraph(finalSession.nodes, finalSession.links)
-          if (items.length > 0) {
-            void bulkUpdateNodes(session.id, { nodes: items }).then(() => {
-              void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
-            })
-          }
-        }
         setFitContentNonce((x) => x + 1)
         // Enable position transitions briefly for final glide
         setAnimatePositions(true)
@@ -1078,7 +1040,6 @@ export function WorkspaceCanvasPage() {
         // Clear streaming tracking sets
         streamingNodeIdsRef.current = new Set()
         streamingLinkIdsRef.current = new Set()
-        invalidateSession()
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         const message = error instanceof Error ? error.message : 'AI request failed.'
@@ -1091,7 +1052,7 @@ export function WorkspaceCanvasPage() {
         }
       }
     },
-    [workspaceSlug, session, consumePromptStreamEvent, invalidateSession],
+    [workspaceSlug, session, consumePromptStreamEvent, flushDirtyPositions],
   )
 
   useEffect(() => {

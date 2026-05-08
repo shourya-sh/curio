@@ -79,18 +79,13 @@ async def session_prompt(
     user_id: str = Depends(get_current_user),
     _rate_limit: None = Depends(limit_ai_prompt),
 ):
-    db_resolve = SessionLocal()
+    db_pre = SessionLocal()
     try:
-        pk = resolve_session_pk_or_404(session_id, db_resolve)
-        verify_session_owner(db_resolve, pk, user_id)
+        pk = resolve_session_pk_or_404(session_id, db_pre)
+        verify_session_owner(db_pre, pk, user_id)
+        user_api_keys = get_user_api_keys(db_pre, user_id)
     finally:
-        db_resolve.close()
-    # Look up user's BYOK keys
-    db_keys = SessionLocal()
-    try:
-        user_api_keys = get_user_api_keys(db_keys, user_id)
-    finally:
-        db_keys.close()
+        db_pre.close()
 
     # own DB session — stream outlives the request-scoped one
     db = SessionLocal()
