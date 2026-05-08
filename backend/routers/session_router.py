@@ -12,7 +12,7 @@ from services.graph_service import verify_session_owner
 from services.profile_service import get_user_api_keys
 from services.rate_limit import limit_ai_prompt
 from services.session_identifiers import allocate_unique_slug, base_slug_for_new_session, resolve_session_pk_or_404
-from services.stream_service import run_agent_stream
+from services.stream_service import run_agent_stream, run_expand_stream
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -91,6 +91,31 @@ async def session_prompt(
     db = SessionLocal()
     return StreamingResponse(
         run_agent_stream(pk, body.prompt, db, request, anchor_node_id=body.anchor_node_id, api_keys=user_api_keys),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# expand a specific node — streams SSE events directly from expand agent
+@router.post("/{session_id}/nodes/{node_id}/expand")
+async def expand_node(
+    session_id: str,
+    node_id: int,
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    _rate_limit: None = Depends(limit_ai_prompt),
+):
+    db_pre = SessionLocal()
+    try:
+        pk = resolve_session_pk_or_404(session_id, db_pre)
+        verify_session_owner(db_pre, pk, user_id)
+        user_api_keys = get_user_api_keys(db_pre, user_id)
+    finally:
+        db_pre.close()
+
+    db = SessionLocal()
+    return StreamingResponse(
+        run_expand_stream(pk, node_id, db, request, api_keys=user_api_keys),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -1086,7 +1086,9 @@ export function WorkspaceCanvasPage() {
       },
     ])
     try {
-      await runSessionPrompt(prompt, selectedId)
+      // Chat prompts always go to Context Agent (no anchor).
+      // Only explicit expand-button clicks send an anchor_node_id.
+      await runSessionPrompt(prompt, null)
     } catch {
       /* error banner set in runSessionPrompt */
     }
