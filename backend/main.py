@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 # override=True so local .env wins over stale or placeholder GEMINI_* in the shell/OS env.
 load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
-from db import ensure_schema, get_db
+from db import get_db
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logger import get_logger
@@ -19,7 +19,6 @@ logger = get_logger("app") # logger for the overall app
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    ensure_schema()
     from ai import gemini_configured, gemini_key_pool_size
 
     if gemini_configured():
