@@ -344,6 +344,8 @@ export type SessionPromptEvent =
   | { type: 'status'; data: { message?: string } }
   | { type: 'tool_used'; data: { tool: string; args?: Record<string, unknown> } }
   | { type: 'node_created'; data: NodeOut }
+  | { type: 'node_updated'; data: { id: number; session_id: number; position_x: number; position_y: number } }
+  | { type: 'node_deleted'; data: { id: number; session_id: number } }
   | { type: 'link_created'; data: LinkOut }
   | { type: 'message_created'; data: MessageOut }
   | {

@@ -78,3 +78,55 @@ class StructuredGraph(BaseModel):
     edges: list[StructuredEdge] = Field(default_factory=list)
     assistant_summary: str = ""
     sources: list[SourceDraft] = Field(default_factory=list)
+
+
+# ── Worker Agent Models (research_agent / plan_agent) ──
+
+
+class FilledNode(BaseModel):
+    """A child node with content filled by a worker agent."""
+    topic: str
+    summary: str = ""
+    details: str = ""
+    subtopics: list[str] = Field(default_factory=list)
+    palette_role: PaletteRole = "neutral"
+
+
+class FilledGroup(BaseModel):
+    """One parent with its filled children."""
+    parent_id: int
+    children: list[FilledNode] = Field(default_factory=list)
+
+
+class WorkerSourceDraft(BaseModel):
+    """Source from worker agent, references child topics by index within the response."""
+    title: str = ""
+    url: str = ""
+    publisher: str = ""
+    year: str = ""
+    summary: str = ""
+    excerpt: str = ""
+    relevance: str = ""
+    node_topics: list[str] = Field(
+        default_factory=list,
+        description="Topics of nodes this source supports (matched by topic string).",
+    )
+
+
+class WorkerResult(BaseModel):
+    """Output of research_agent or plan_agent: filled groups + sources."""
+    groups: list[FilledGroup] = Field(default_factory=list)
+    sources: list[WorkerSourceDraft] = Field(default_factory=list)
+
+
+# ── Expand Agent Models ──
+
+
+class ExpandedTopic(BaseModel):
+    """A subtopic label proposed by the expand agent."""
+    topic: str
+
+
+class ExpandResult(BaseModel):
+    """Output of expand_agent: list of subtopic labels."""
+    subtopics: list[ExpandedTopic] = Field(default_factory=list)

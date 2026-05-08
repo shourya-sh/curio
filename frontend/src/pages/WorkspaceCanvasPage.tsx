@@ -117,6 +117,17 @@ function addLinkDeterministic(session: SessionDetail, link: LinkOut): SessionDet
   return { ...session, links: [...session.links, link].sort((a, b) => a.id - b.id) }
 }
 
+function updateNodePosition(session: SessionDetail, nodeId: number, x: number, y: number): SessionDetail {
+  return {
+    ...session,
+    nodes: session.nodes.map((n) =>
+      n.id === nodeId
+        ? { ...n, position_x: x, position_y: y, original_position_x: x, original_position_y: y }
+        : n,
+    ),
+  }
+}
+
 /** One home-screen auto prompt per session (Strict Mode double-mount; never cleared on React Query cache updates). */
 const workspaceHomeAutoPromptOnce = new Set<string>()
 
@@ -409,11 +420,9 @@ export function WorkspaceCanvasPage() {
     }
   }, [session, workspaceSlug, navigate, location.state])
 
-  const sessionMessagesKey =
-    sessionQuery.data?.messages?.length ?
-      sessionQuery.data.messages.map((m) => `${m.id}:${m.created_at}`).join('|')
-    : `none:${sessionQuery.data?.id ?? workspaceSlug}`
-  const chatHydrationDep = `${sessionMessagesKey}:${sessionQuery.data ? 'loaded' : 'pending'}`
+  const sessionMessagesLen = sessionQuery.data?.messages?.length ?? 0
+  const sessionLastMsgId = sessionQuery.data?.messages?.[sessionMessagesLen - 1]?.id ?? 0
+  const chatHydrationDep = `${sessionQuery.data?.id ?? workspaceSlug}:${sessionMessagesLen}:${sessionLastMsgId}:${sessionQuery.data ? 'loaded' : 'pending'}`
   const loading = sessionQuery.isPending && !session
   const invalidateSession = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
@@ -455,12 +464,21 @@ export function WorkspaceCanvasPage() {
     })()
   }, [session, workspaceSlug, invalidateSession])
 
+  // Hydrate sources from session messages — only recompute when messages actually change
+  const prevSourcesDepRef = useRef('')
   useEffect(() => {
+    const dep = `${session?.id}:${session?.messages?.length ?? 0}`
+    if (dep === prevSourcesDepRef.current) return
+    prevSourcesDepRef.current = dep
     setSourcesList(parseSourcesFromSession(session ?? undefined))
   }, [session])
 
+  // Hydrate chat messages from DB — only recompute when message count/IDs change
+  const prevChatDepRef = useRef('')
   useEffect(() => {
     if (!sessionQuery.data || !workspaceSlug) return
+    if (chatHydrationDep === prevChatDepRef.current) return
+    prevChatDepRef.current = chatHydrationDep
     const fromDb = chatRowsFromSessionMessages(sessionQuery.data.messages)
     const trimmedSeed = initialPrompt.trim()
     if (fromDb.length === 0 && trimmedSeed) {
@@ -469,7 +487,7 @@ export function WorkspaceCanvasPage() {
       return
     }
     setChatMessages(fromDb)
-  }, [workspaceSlug, initialPrompt, chatHydrationDep])
+  }, [workspaceSlug, initialPrompt, chatHydrationDep, sessionQuery.data])
 
   const canUndo = historyIndex >= 0
   const canRedo = historyIndex < history.length - 1
@@ -942,6 +960,20 @@ export function WorkspaceCanvasPage() {
           current ? addNodeDeterministic(current, node) : current,
         )
         streamingNodeIdsRef.current.add(node.id)
+        return
+      }
+      if (event.type === 'node_deleted') {
+        const { id } = event.data as { id: number }
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+          current ? removeNodeDeterministic(current, id) : current,
+        )
+        return
+      }
+      if (event.type === 'node_updated') {
+        const { id, position_x, position_y } = event.data as { id: number; position_x: number; position_y: number }
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+          current ? updateNodePosition(current, id, position_x, position_y) : current,
+        )
         return
       }
       if (event.type === 'link_created') {
