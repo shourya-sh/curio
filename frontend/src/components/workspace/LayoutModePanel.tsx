@@ -4,6 +4,8 @@ type Props = {
   value: LayoutMode
   onChange: (next: LayoutMode) => void
   disabled?: boolean
+  /** Tighter grid for bottom-dock popover */
+  compact?: boolean
 }
 
 const LABELS: Record<LayoutMode, { title: string; hint: string; glyph: React.ReactNode }> = {
@@ -73,9 +75,13 @@ const LABELS: Record<LayoutMode, { title: string; hint: string; glyph: React.Rea
   },
 }
 
-export function LayoutModePanel({ value, onChange, disabled }: Props) {
+export function LayoutModePanel({ value, onChange, disabled, compact = false }: Props) {
   return (
-    <div className='mf-layout-panel' role='toolbar' aria-label='Layout pattern'>
+    <div
+      className={`mf-layout-panel${compact ? ' mf-layout-panel--compact' : ''}`}
+      role='toolbar'
+      aria-label='Layout pattern'
+    >
       <span className='mf-layout-panel__label'>Layout</span>
       <div className='mf-layout-panel__group'>
         {LAYOUT_MODES.map((mode) => {

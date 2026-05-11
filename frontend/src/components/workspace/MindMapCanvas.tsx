@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import type { LinkOut, NodeOut } from '../../lib/api'
 import { CANVAS_H, CANVAS_W, snapCoord } from '../../lib/canvasConstants'
 import {
@@ -59,6 +59,19 @@ function pointInsideNode(lx: number, ly: number, cx: number, cy: number, width: 
   return Math.abs(lx - cx) <= width / 2 + 10 && Math.abs(ly - cy) <= height / 2 + 10
 }
 
+export type ViewportSnapshot = {
+  scale: number
+  handToolActive: boolean
+}
+
+export type MindMapCanvasHandle = {
+  setHandTool: (on: boolean) => void
+  zoomIn: () => void
+  zoomOut: () => void
+  resetView: () => void
+  fit: () => void
+}
+
 type Props = {
   nodes: NodeOut[]
   links: LinkOut[]
@@ -83,28 +96,38 @@ type Props = {
   streamingNodeIds?: Set<number>
   /** Link IDs recently created (for edge draw-in animation). */
   newLinkIds?: Set<number>
+  /** Emits the latest viewport scale + pan tool state to the parent so external controls can reflect/affect them. */
+  onViewportChange?: (snapshot: ViewportSnapshot) => void
+  /** Per-side padding (in css px) the fit-to-view algorithm should leave free.
+   *  Used to keep the floating control dock from overlapping the fitted content. */
+  fitInset?: { top: number; right: number; bottom: number; left: number }
 }
 
-export function MindMapCanvas({
-  nodes,
-  links,
-  selectedId,
-  connectMode,
-  placeNodeMode,
-  onSelect,
-  onHoverNode,
-  onDragEnd,
-  onConnectWire,
-  onPlaceNodeComplete,
-  pendingPosition,
-  selectedLinkId = null,
-  onSelectLink,
-  fitContentNonce = 0,
-  onFitView,
-  animatePositions = false,
-  streamingNodeIds,
-  newLinkIds,
-}: Props) {
+export const MindMapCanvas = forwardRef<MindMapCanvasHandle, Props>(function MindMapCanvas(
+  {
+    nodes,
+    links,
+    selectedId,
+    connectMode,
+    placeNodeMode,
+    onSelect,
+    onHoverNode,
+    onDragEnd,
+    onConnectWire,
+    onPlaceNodeComplete,
+    pendingPosition,
+    selectedLinkId = null,
+    onSelectLink,
+    fitContentNonce = 0,
+    onFitView,
+    animatePositions = false,
+    streamingNodeIds,
+    newLinkIds,
+    onViewportChange,
+    fitInset,
+  }: Props,
+  ref,
+) {
   const boardRef = useRef<HTMLDivElement | null>(null)
   const hitRef = useRef<HTMLDivElement | null>(null)
   const spaceDownRef = useRef(false)
@@ -177,6 +200,16 @@ export function MindMapCanvas({
     setViewport({ x: 0, y: 0, scale: 1 })
   }, [])
 
+  const zoomCentered = useCallback(
+    (factor: number) => {
+      const el = boardRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, viewport.scale * factor)
+    },
+    [viewport.scale, zoomAt],
+  )
+
   const runFitBounds = useCallback(() => {
     const el = boardRef.current
     if (!el || nodes.length === 0) {
@@ -186,7 +219,12 @@ export function MindMapCanvas({
     const rect = el.getBoundingClientRect()
     const W = rect.width
     const H = rect.height
-    if (W < 1 || H < 1) return
+    if (W < 1 || H < 1) {
+      // Canvas hasn't been laid out yet (e.g. opening a fresh session before
+      // flex children settle). Retry on the next frame so auto-fit still works.
+      requestAnimationFrame(() => runFitBounds())
+      return
+    }
 
     let minX = Infinity
     let minY = Infinity
@@ -201,18 +239,26 @@ export function MindMapCanvas({
       maxY = Math.max(maxY, p.y + box.height / 2)
     }
 
-    const pad = 48
+    const padT = fitInset?.top ?? 48
+    const padR = fitInset?.right ?? 48
+    const padB = fitInset?.bottom ?? 48
+    const padL = fitInset?.left ?? 48
     const cw = Math.max(maxX - minX, 1)
     const ch = Math.max(maxY - minY, 1)
-    const scale = clampZoom(Math.min((W - 2 * pad) / cw, (H - 2 * pad) / ch))
+    const availW = Math.max(W - padL - padR, 1)
+    const availH = Math.max(H - padT - padB, 1)
+    const scale = clampZoom(Math.min(availW / cw, availH / ch))
     const cx = (minX + maxX) / 2
     const cy = (minY + maxY) / 2
+    // Center on the geometric middle of the available (non-dock-covered) area.
+    const availCenterX = (padL + (W - padR)) / 2
+    const availCenterY = (padT + (H - padB)) / 2
     setViewport({
       scale,
-      x: W / 2 - cx * scale,
-      y: H / 2 - cy * scale,
+      x: availCenterX - cx * scale,
+      y: availCenterY - cy * scale,
     })
-  }, [nodes, pendingPosition])
+  }, [nodes, pendingPosition, fitInset])
 
   const lastFitNonceRef = useRef(0)
   useLayoutEffect(() => {
@@ -246,18 +292,23 @@ export function MindMapCanvas({
   const handToolActive = handTool && !connectMode && !placeNodeMode
 
   useEffect(() => {
-    if (!handToolActive) return
-    const onDocPointerDown = (e: PointerEvent) => {
-      const t = e.target as Element | null
-      if (!t) return
-      if (t.closest('.mm-viewport-controls__pan')) return
-      const board = boardRef.current
-      if (board?.contains(t) && !t.closest('.mm-viewport-controls')) return
-      setHandTool(false)
-    }
-    document.addEventListener('pointerdown', onDocPointerDown, true)
-    return () => document.removeEventListener('pointerdown', onDocPointerDown, true)
-  }, [handToolActive])
+    onViewportChange?.({ scale: viewport.scale, handToolActive })
+  }, [viewport.scale, handToolActive, onViewportChange])
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setHandTool: (on: boolean) => setHandTool(on),
+      zoomIn: () => zoomCentered(1.15),
+      zoomOut: () => zoomCentered(1 / 1.15),
+      resetView,
+      fit: () => {
+        if (onFitView) onFitView()
+        else resetView()
+      },
+    }),
+    [onFitView, resetView, zoomCentered],
+  )
 
   useEffect(() => {
     const isTyping = (target: EventTarget | null) => {
@@ -269,6 +320,11 @@ export function MindMapCanvas({
       if (isTyping(e.target)) return
       if (e.code === 'Space') {
         spaceDownRef.current = true
+        e.preventDefault()
+        return
+      }
+      if (e.key === 'Escape' && handToolRef.current) {
+        setHandTool(false)
         e.preventDefault()
         return
       }
@@ -515,7 +571,15 @@ export function MindMapCanvas({
   const onBoardPointerUp = useCallback(
     (e: React.PointerEvent) => {
       if (pan && pan.pointerId === e.pointerId) {
+        const dx = e.clientX - pan.startClient.x
+        const dy = e.clientY - pan.startClient.y
+        const moved = Math.hypot(dx, dy)
         setPan(null)
+        // A click without any drag exits hand-tool mode. The user is signalling
+        // they're done panning. Drags (>= 4px) keep the tool armed.
+        if (moved < 4 && handToolRef.current) {
+          setHandTool(false)
+        }
         return
       }
       if (!connectMode) return
@@ -713,34 +777,6 @@ export function MindMapCanvas({
         )
         })}
       </div>
-      <div className='mm-viewport-controls' aria-label='Canvas view controls'>
-        <button
-          type='button'
-          className={`mm-viewport-controls__pan${handToolActive ? ' mm-viewport-controls__pan--on' : ''}`}
-          aria-label={handToolActive ? 'Pan tool on — drag to move the canvas' : 'Pan tool — drag to move the canvas'}
-          aria-pressed={handToolActive}
-          title='Pan (drag the canvas)'
-          onClick={() => setHandTool((v) => !v)}
-        >
-          <svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden>
-            <path d='M14.5 4.5 12 2 9.5 4.5M12 2v6M14.5 19.5 12 22l-2.5-2.5M12 22v-6M4.5 9.5 2 12l2.5 2.5M2 12h6M19.5 9.5 22 12l-2.5 2.5M22 12h-6' />
-          </svg>
-        </button>
-        <button type='button' onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, viewport.scale / 1.15)} aria-label='Zoom out'>
-          −
-        </button>
-        <span>{Math.round(viewport.scale * 100)}%</span>
-        <button type='button' onClick={() => zoomAt(window.innerWidth / 2, window.innerHeight / 2, viewport.scale * 1.15)} aria-label='Zoom in'>
-          +
-        </button>
-        <button
-          type='button'
-          onClick={() => (onFitView ? onFitView() : resetView())}
-          aria-label={onFitView ? 'Fit view and restore canonical node positions' : 'Reset zoom and pan'}
-        >
-          Fit
-        </button>
-      </div>
     </div>
   )
-}
+})

@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
 import { NodeColorField } from '../components/workspace/NodeColorField'
-import { MindMapCanvas } from '../components/workspace/MindMapCanvas'
+import { MindMapCanvas, type MindMapCanvasHandle, type ViewportSnapshot } from '../components/workspace/MindMapCanvas'
 import { LayoutModePanel } from '../components/workspace/LayoutModePanel'
 import { CANVAS_H, CANVAS_W } from '../lib/canvasConstants'
 import {
@@ -81,6 +81,16 @@ interface HistoryEntry {
 
 type RightPanelMode = 'none' | 'ai' | 'nodes' | 'sources'
 type NodesPanelView = 'catalog' | 'detail'
+type DockPopover = null | 'manual' | 'layout' | 'position'
+type DockPosition = 'top' | 'bottom' | 'left' | 'right'
+const VALID_DOCK_POSITIONS: DockPosition[] = ['top', 'bottom', 'left', 'right']
+const DOCK_POSITION_STORAGE_KEY = 'curio:dockPosition'
+
+function loadDockPosition(): DockPosition {
+  if (typeof window === 'undefined') return 'bottom'
+  const saved = window.localStorage.getItem(DOCK_POSITION_STORAGE_KEY)
+  return (VALID_DOCK_POSITIONS as string[]).includes(saved ?? '') ? (saved as DockPosition) : 'bottom'
+}
 
 function removeNodeDeterministic(session: SessionDetail, nodeId: number): SessionDetail {
   return {
@@ -164,10 +174,6 @@ function applyLinkPatchDeterministic(session: SessionDetail, linkId: number, pat
     ...session,
     links: session.links.map((link) => (link.id === linkId ? { ...link, ...patch } : link)),
   }
-}
-
-function RailFace({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return <span className={`rail-icon ${className}`.trim()}>{children}</span>
 }
 
 function LinkStyleGlyph({ kind }: { kind: LinkLineStyle }) {
@@ -318,7 +324,45 @@ export function WorkspaceCanvasPage() {
   const [hoveredId, setHoveredId] = useState<number | null>(null)
   const [selectedLinkId, setSelectedLinkId] = useState<number | null>(null)
   const [selectedLinkPos, setSelectedLinkPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
-  const [manualOpen, setManualOpen] = useState(false)
+  const [dockPopover, setDockPopover] = useState<DockPopover>(null)
+  const [dockOpen, setDockOpen] = useState(true)
+  const [dockPosition, setDockPosition] = useState<DockPosition>(loadDockPosition)
+  const [viewportInfo, setViewportInfo] = useState<ViewportSnapshot>({ scale: 1, handToolActive: false })
+  const mindMapRef = useRef<MindMapCanvasHandle | null>(null)
+  const onViewportChange = useCallback((snap: ViewportSnapshot) => {
+    setViewportInfo((prev) =>
+      prev.scale === snap.scale && prev.handToolActive === snap.handToolActive ? prev : snap,
+    )
+  }, [])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DOCK_POSITION_STORAGE_KEY, dockPosition)
+    } catch {
+      /* localStorage may be unavailable; ignore */
+    }
+  }, [dockPosition])
+
+  const dockIsVertical = dockPosition === 'left' || dockPosition === 'right'
+  // Reserve extra room on whichever side the dock occupies so Fit doesn't drop
+  // nodes behind the floating bar. ~108px is enough for the bar + its 18px gap.
+  const fitInset = useMemo(() => {
+    const base = 56
+    const reserved = dockIsVertical ? 132 : 108
+    return {
+      top: dockPosition === 'top' ? reserved : base,
+      bottom: dockPosition === 'bottom' ? reserved : base,
+      left: dockPosition === 'left' ? reserved : base,
+      right: dockPosition === 'right' ? reserved : base,
+    }
+  }, [dockIsVertical, dockPosition])
+
+  const setDockPositionAndClose = useCallback((next: DockPosition) => {
+    setDockPosition(next)
+    setDockPopover(null)
+    // Re-fit on the next tick once the layout has updated so the new inset is honored.
+    setTimeout(() => setFitContentNonce((x) => x + 1), 0)
+  }, [])
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode>('none')
   const [sourcesList, setSourcesList] = useState<ResearchSource[]>([])
   const [nodesPanelView, setNodesPanelView] = useState<NodesPanelView>('catalog')
@@ -397,8 +441,11 @@ export function WorkspaceCanvasPage() {
     promptAbortRef.current = null
   }, [workspaceSlug])
 
+  const autoFitDoneRef = useRef<string | null>(null)
+
   useEffect(() => {
     setFitContentNonce(0)
+    autoFitDoneRef.current = null
   }, [workspaceSlug])
 
   const sessionQuery = useQuery<SessionDetail>({
@@ -608,6 +655,19 @@ export function WorkspaceCanvasPage() {
     recordSessionOpened(session.slug)
   }, [session, sessionQuery.error])
 
+  // Auto-fit the canvas the first time a session loads with nodes so the user
+  // always sees the whole graph on open, the same as clicking the Fit button.
+  // Without this, the viewport sits at (0, 0) while nodes live near the center
+  // of the 12000x7200 logical canvas, making the map appear empty.
+  const sessionLoadedNodeCount = sessionQuery.data?.nodes?.length ?? 0
+  useEffect(() => {
+    if (!workspaceSlug) return
+    if (autoFitDoneRef.current === workspaceSlug) return
+    if (sessionLoadedNodeCount === 0) return
+    autoFitDoneRef.current = workspaceSlug
+    setFitContentNonce((x) => x + 1)
+  }, [workspaceSlug, sessionLoadedNodeCount])
+
   useEffect(() => {
     if (!session) return
     const onKeyDown = (e: KeyboardEvent) => {
@@ -678,20 +738,48 @@ export function WorkspaceCanvasPage() {
         e.preventDefault()
         return
       }
-      const hadOverlay =
-        connectMode || placeNodeMode || linkPopSubmenu != null || selectedLinkId != null
-      if (!hadOverlay) return
-      e.preventDefault()
-      if (connectMode) setConnectMode(false)
-      if (placeNodeMode) setPlaceNodeMode(false)
-      setLinkPopSubmenu(null)
-      setSelectedLinkId(null)
+      if (connectMode) {
+        e.preventDefault()
+        setConnectMode(false)
+        return
+      }
+      if (placeNodeMode) {
+        e.preventDefault()
+        setPlaceNodeMode(false)
+        return
+      }
+      if (linkPopSubmenu != null) {
+        e.preventDefault()
+        setLinkPopSubmenu(null)
+        return
+      }
+      if (selectedLinkId != null) {
+        e.preventDefault()
+        setSelectedLinkId(null)
+        return
+      }
+      if (dockPopover != null) {
+        e.preventDefault()
+        setDockPopover(null)
+        setPlaceNodeMode(false)
+        setConnectMode(false)
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [connectMode, deleteConfirm, linkPopSubmenu, linkDeleteConfirm, placeNodeMode, renamingNodeId, selectedLinkId])
+  }, [
+    connectMode,
+    deleteConfirm,
+    dockPopover,
+    linkPopSubmenu,
+    linkDeleteConfirm,
+    placeNodeMode,
+    renamingNodeId,
+    selectedLinkId,
+  ])
 
   const onSelect = useCallback((id: number | null) => {
+    setDockPopover(null)
     setSelectedId(id)
     setSelectedLinkId(null)
     if (id != null) {
@@ -702,6 +790,7 @@ export function WorkspaceCanvasPage() {
   }, [])
 
   const onSelectLink = useCallback((id: number | null, pos?: { x: number; y: number }) => {
+    setDockPopover(null)
     setSelectedLinkId(id)
     if (pos && canvasRef.current) {
       const rect = canvasRef.current.getBoundingClientRect()
@@ -1273,21 +1362,33 @@ export function WorkspaceCanvasPage() {
     return () => document.removeEventListener('pointerdown', onDoc)
   }, [linkPopSubmenu])
 
-  const toggleManual = () => {
-    setManualOpen((o) => {
-      if (o) {
+  const toggleManualDock = () => {
+    setDockPopover((p) => {
+      if (p === 'manual') {
         setPlaceNodeMode(false)
         setConnectMode(false)
+        return null
       }
-      return !o
+      return 'manual'
     })
   }
 
-  const closeManualIfClickedAway = (e: React.MouseEvent<HTMLElement>) => {
-    if (!manualOpen) return
+  const toggleLayoutDock = () => {
+    setDockPopover((p) => {
+      if (p === 'layout') return null
+      setPlaceNodeMode(false)
+      setConnectMode(false)
+      return 'layout'
+    })
+  }
+
+  const closeDockPopoverIfClickedAway = (e: React.MouseEvent<HTMLElement>) => {
+    if (dockPopover == null) return
     const target = e.target as HTMLElement
-    if (target.closest('.mf-rail-column')) return
-    setManualOpen(false)
+    if (target.closest('.mf-bottom-dock')) return
+    setDockPopover(null)
+    setPlaceNodeMode(false)
+    setConnectMode(false)
   }
 
   const confirmDelete = () => {
@@ -1357,11 +1458,13 @@ export function WorkspaceCanvasPage() {
   }, [selectedLinkId, session])
 
   const openNodesCatalog = useCallback(() => {
+    setDockPopover(null)
     setRightPanelMode('nodes')
     setNodesPanelView('catalog')
   }, [])
 
   const openNodeDetail = useCallback((nodeId: number) => {
+    setDockPopover(null)
     setSelectedId(nodeId)
     setSelectedLinkId(null)
     setPanelNodeId(nodeId)
@@ -1374,7 +1477,7 @@ export function WorkspaceCanvasPage() {
   }, [])
 
   const closeManualFlyout = useCallback(() => {
-    setManualOpen(false)
+    setDockPopover(null)
     setPlaceNodeMode(false)
     setConnectMode(false)
   }, [])
@@ -1447,145 +1550,9 @@ export function WorkspaceCanvasPage() {
         </div>
       ) : null}
 
-      <main className={mainClassName} onClickCapture={closeManualIfClickedAway}>
-        <div className='mf-rail-column'>
-          <div className={`mf-manual-flyout${manualOpen ? ' is-open' : ''}`} aria-hidden={!manualOpen}>
-            <button
-              type='button'
-              className='mf-flyout-close'
-              title='Close manual tools'
-              aria-label='Close manual tools'
-              disabled={!manualOpen}
-              onClick={closeManualFlyout}
-            >
-              ×
-            </button>
-            <button
-              type='button'
-              className={`mf-fly-btn${placeNodeMode ? ' active' : ''}`}
-              title='Add node — press and drag on the canvas to size the circle'
-              disabled={!manualOpen}
-              onClick={() => {
-                setConnectMode(false)
-                setSelectedLinkId(null)
-                setPlaceNodeMode((p) => !p)
-              }}
-            >
-              <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
-                <circle cx='12' cy='12' r='9' />
-                <path d='M12 8v8M8 12h8' strokeLinecap='round' />
-              </svg>
-            </button>
-            <button
-              type='button'
-              className={`mf-fly-btn${connectMode ? ' active' : ''}`}
-              title='Connect — click two nodes or drag between nodes'
-              disabled={!manualOpen}
-              onClick={() => {
-                setPlaceNodeMode(false)
-                setHoveredId(null)
-                setSelectedId(null)
-                setSelectedLinkId(null)
-                setConnectMode((c) => !c)
-              }}
-            >
-              <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
-                <path
-                  d='M10 13a5 5 0 0 1 0-7l1-1a5 5 0 0 1 7 7l-1 1M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1'
-                  strokeLinecap='round'
-                />
-              </svg>
-            </button>
-          </div>
-
-          <aside className='mf-left-rail' aria-label='Tools'>
-            <button
-              type='button'
-              className={`rail-item${manualOpen ? ' active' : ''}`}
-              onClick={toggleManual}
-              aria-pressed={manualOpen}
-            >
-              <span className='rail-icon-box'>
-                <span className='rail-icon rail-icon--lg' aria-hidden>
-                  +
-                </span>
-              </span>
-              <span className='rail-label'>Manual</span>
-            </button>
-            <button
-              type='button'
-              className={`rail-item${rightPanelMode === 'nodes' ? ' active' : ''}`}
-              onClick={openNodesCatalog}
-              aria-pressed={rightPanelMode === 'nodes'}
-            >
-              <span className='rail-icon-box'>
-                <RailFace>◍</RailFace>
-              </span>
-              <span className='rail-label'>Nodes</span>
-            </button>
-            <button
-              type='button'
-              className={`rail-item${rightPanelMode === 'sources' ? ' active' : ''}`}
-              aria-pressed={rightPanelMode === 'sources'}
-              onClick={() => setRightPanelMode((m) => (m === 'sources' ? 'none' : 'sources'))}
-            >
-              <span className='rail-icon-box'>
-                <RailFace>▤</RailFace>
-              </span>
-              <span className='rail-label'>Sources</span>
-            </button>
-            <button
-              type='button'
-              className={`rail-item${rightPanelMode === 'ai' ? ' active' : ''}`}
-              onClick={() => {
-                setRightPanelMode((mode) => (mode === 'ai' ? 'none' : 'ai'))
-              }}
-              aria-pressed={rightPanelMode === 'ai'}
-            >
-              <span className='rail-icon-box'>
-                <span className='rail-icon' aria-hidden>
-                  ✧
-                </span>
-              </span>
-              <span className='rail-label'>AI</span>
-            </button>
-            <div className='rail-split'>
-              <button
-                type='button'
-                className={`rail-item rail-item--split${canUndo ? ' active' : ''}`}
-                onClick={undoAction}
-                disabled={!canUndo}
-                title={canUndo ? 'Undo (Ctrl+Z)' : 'Nothing to undo'}
-              >
-                <span className='rail-icon-box'>
-                  <RailFace>↺</RailFace>
-                </span>
-                <span className='rail-label'>Undo</span>
-              </button>
-              <button
-                type='button'
-                className={`rail-item rail-item--split${canRedo ? ' active' : ''}`}
-                onClick={redoAction}
-                disabled={!canRedo}
-                title={canRedo ? 'Redo (Ctrl+Y)' : 'Nothing to redo'}
-              >
-                <span className='rail-icon-box'>
-                  <RailFace>↻</RailFace>
-                </span>
-                <span className='rail-label'>Redo</span>
-              </button>
-            </div>
-          </aside>
-        </div>
-
+      <main className={mainClassName} onClickCapture={closeDockPopoverIfClickedAway}>
+        <div className='mf-workspace-center'>
         <section ref={canvasRef} className='mf-canvas mf-canvas--live'>
-          {session ? (
-            <LayoutModePanel
-              value={session.layout_mode}
-              onChange={handleLayoutModeChange}
-              disabled={layoutSwitching || streaming}
-            />
-          ) : null}
           {loading ? (
             <p className='mf-canvas-hint'>Loading project…</p>
           ) : !session ? (
@@ -1594,10 +1561,11 @@ export function WorkspaceCanvasPage() {
             <>
               {session.nodes.length === 0 ? (
                 <p className='mf-canvas-hint'>
-                  Empty map. Open Manual → Add node, then press and drag on the canvas to draw the circle size you want.
+                  Empty map. Tap + in the bottom bar, choose Add node, then press and drag on the canvas to set the circle size.
                 </p>
               ) : null}
               <MindMapCanvas
+                ref={mindMapRef}
                 nodes={session.nodes}
                 links={session.links}
                 selectedId={selectedId}
@@ -1616,6 +1584,8 @@ export function WorkspaceCanvasPage() {
                 animatePositions={animatePositions}
                 streamingNodeIds={streamingNodeIdsRef.current}
                 newLinkIds={streamingLinkIdsRef.current}
+                onViewportChange={onViewportChange}
+                fitInset={fitInset}
               />
               {focusedNode ? (
                 <div
@@ -1754,6 +1724,353 @@ export function WorkspaceCanvasPage() {
             </>
           )}
         </section>
+
+        {dockOpen ? (
+        <nav
+          className={`mf-bottom-dock mf-bottom-dock--${dockPosition}${dockIsVertical ? ' mf-bottom-dock--vertical' : ''}`}
+          aria-label='Workspace tools'
+          data-orientation={dockIsVertical ? 'vertical' : 'horizontal'}
+        >
+          <div className='mf-bottom-dock__inner'>
+            <div className='mf-bottom-dock__tools'>
+              <div className='mf-dock-slot'>
+                <button
+                  type='button'
+                  className={`mf-dock-btn${dockPopover === 'manual' || placeNodeMode || connectMode ? ' active' : ''}`}
+                  title='Manual tools — add nodes and connections'
+                  aria-pressed={dockPopover === 'manual'}
+                  disabled={!session}
+                  onClick={toggleManualDock}
+                >
+                  <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' aria-hidden>
+                    <circle cx='12' cy='12' r='9' />
+                    <path d='M12 8v8M8 12h8' strokeLinecap='round' />
+                  </svg>
+                  <span className='mf-dock-btn__hint'>Manual</span>
+                </button>
+                <div
+                  className={`mf-dock-pop mf-dock-pop--manual${dockPopover === 'manual' ? ' is-open' : ''}`}
+                  aria-hidden={dockPopover !== 'manual'}
+                >
+                  <button
+                    type='button'
+                    className='mf-dock-pop__close'
+                    title='Close'
+                    aria-label='Close manual tools'
+                    disabled={dockPopover !== 'manual'}
+                    onClick={closeManualFlyout}
+                  >
+                    ×
+                  </button>
+                  <button
+                    type='button'
+                    className={`mf-fly-btn${placeNodeMode ? ' active' : ''}`}
+                    title='Add node — press and drag on the canvas to size the circle'
+                    disabled={dockPopover !== 'manual'}
+                    onClick={() => {
+                      setConnectMode(false)
+                      setSelectedLinkId(null)
+                      setPlaceNodeMode((p) => !p)
+                    }}
+                  >
+                    <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                      <circle cx='12' cy='12' r='9' />
+                      <path d='M12 8v8M8 12h8' strokeLinecap='round' />
+                    </svg>
+                  </button>
+                  <button
+                    type='button'
+                    className={`mf-fly-btn${connectMode ? ' active' : ''}`}
+                    title='Connect — click two nodes or drag between nodes'
+                    disabled={dockPopover !== 'manual'}
+                    onClick={() => {
+                      setPlaceNodeMode(false)
+                      setHoveredId(null)
+                      setSelectedId(null)
+                      setSelectedLinkId(null)
+                      setConnectMode((c) => !c)
+                    }}
+                  >
+                    <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                      <path
+                        d='M10 13a5 5 0 0 1 0-7l1-1a5 5 0 0 1 7 7l-1 1M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1'
+                        strokeLinecap='round'
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type='button'
+                className={`mf-dock-btn${rightPanelMode === 'nodes' ? ' active' : ''}`}
+                title='Nodes list and details'
+                aria-pressed={rightPanelMode === 'nodes'}
+                disabled={!session}
+                onClick={openNodesCatalog}
+              >
+                <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path d='M8 6h13M8 12h13M8 18h13' strokeLinecap='round' />
+                  <path d='M4 6h.01M4 12h.01M4 18h.01' strokeLinecap='round' strokeWidth='3' />
+                </svg>
+                <span className='mf-dock-btn__hint'>Nodes</span>
+              </button>
+              <button
+                type='button'
+                className={`mf-dock-btn${rightPanelMode === 'sources' ? ' active' : ''}`}
+                title='Research sources'
+                aria-pressed={rightPanelMode === 'sources'}
+                disabled={!session}
+                onClick={() => {
+                  setDockPopover(null)
+                  setRightPanelMode((m) => (m === 'sources' ? 'none' : 'sources'))
+                }}
+              >
+                <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path d='M7 4h7l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z' strokeLinejoin='round' />
+                  <path d='M14 4v3h3M9 12h6M9 16h6' strokeLinecap='round' />
+                </svg>
+                <span className='mf-dock-btn__hint'>Sources</span>
+              </button>
+              <button
+                type='button'
+                className={`mf-dock-btn${rightPanelMode === 'ai' ? ' active' : ''}`}
+                title='AI assistant'
+                aria-pressed={rightPanelMode === 'ai'}
+                disabled={!session}
+                onClick={() => {
+                  setDockPopover(null)
+                  setRightPanelMode((mode) => (mode === 'ai' ? 'none' : 'ai'))
+                }}
+              >
+                <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path d='M12 3l1.2 3.6L17 8l-3.8 1.4L12 13l-1.2-3.6L7 8l3.8-1.4L12 3z' strokeLinejoin='round' />
+                  <path d='M5 19l.7-2M19 19l-.7-2' strokeLinecap='round' />
+                </svg>
+                <span className='mf-dock-btn__hint'>AI</span>
+              </button>
+
+              <div className='mf-dock-slot'>
+                <button
+                  type='button'
+                  className={`mf-dock-btn${dockPopover === 'layout' ? ' active' : ''}`}
+                  title='Layout pattern'
+                  aria-pressed={dockPopover === 'layout'}
+                  disabled={!session || layoutSwitching || streaming}
+                  onClick={toggleLayoutDock}
+                >
+                  <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                    <rect x='4' y='4' width='7' height='7' rx='1.5' />
+                    <rect x='13' y='4' width='7' height='7' rx='1.5' />
+                    <rect x='4' y='13' width='7' height='7' rx='1.5' />
+                    <rect x='13' y='13' width='7' height='7' rx='1.5' />
+                  </svg>
+                  <span className='mf-dock-btn__hint'>Layout</span>
+                </button>
+                <div
+                  className={`mf-dock-pop mf-dock-pop--layout${dockPopover === 'layout' ? ' is-open' : ''}`}
+                  aria-hidden={dockPopover !== 'layout'}
+                >
+                  {session ? (
+                    <LayoutModePanel
+                      value={session.layout_mode}
+                      onChange={handleLayoutModeChange}
+                      disabled={layoutSwitching || streaming}
+                      compact
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className='mf-bottom-dock__history'>
+              <button
+                type='button'
+                className={`mf-dock-btn mf-dock-btn--icon${canUndo ? '' : ' muted'}`}
+                title={canUndo ? 'Undo (Ctrl+Z)' : 'Nothing to undo'}
+                aria-label='Undo'
+                disabled={!canUndo}
+                onClick={undoAction}
+              >
+                <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path d='M9 14 4 9l5-5' strokeLinecap='round' strokeLinejoin='round' />
+                  <path d='M4 9h10.5a4.5 4.5 0 0 1 0 9H12' strokeLinecap='round' />
+                </svg>
+              </button>
+              <button
+                type='button'
+                className={`mf-dock-btn mf-dock-btn--icon${canRedo ? '' : ' muted'}`}
+                title={canRedo ? 'Redo (Ctrl+Y)' : 'Nothing to redo'}
+                aria-label='Redo'
+                disabled={!canRedo}
+                onClick={redoAction}
+              >
+                <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path d='M15 14l5-5-5-5' strokeLinecap='round' strokeLinejoin='round' />
+                  <path d='M20 9H9.5a4.5 4.5 0 0 0 0 9H12' strokeLinecap='round' />
+                </svg>
+              </button>
+            </div>
+
+            <div className='mf-bottom-dock__view'>
+              <button
+                type='button'
+                className={`mf-dock-btn mf-dock-btn--icon${viewportInfo.handToolActive ? ' active' : ''}`}
+                title={viewportInfo.handToolActive ? 'Pan tool on — drag to move the canvas' : 'Pan tool — drag to move the canvas'}
+                aria-label='Pan tool'
+                aria-pressed={viewportInfo.handToolActive}
+                disabled={!session}
+                onClick={() => mindMapRef.current?.setHandTool(!viewportInfo.handToolActive)}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden>
+                  <path d='M14.5 4.5 12 2 9.5 4.5M12 2v6M14.5 19.5 12 22l-2.5-2.5M12 22v-6M4.5 9.5 2 12l2.5 2.5M2 12h6M19.5 9.5 22 12l-2.5 2.5M22 12h-6' />
+                </svg>
+              </button>
+              <button
+                type='button'
+                className='mf-dock-btn mf-dock-btn--icon'
+                title='Zoom out'
+                aria-label='Zoom out'
+                disabled={!session}
+                onClick={() => mindMapRef.current?.zoomOut()}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round' aria-hidden>
+                  <path d='M5 12h14' />
+                </svg>
+              </button>
+              <span className='mf-dock-zoom' aria-live='polite'>{Math.round(viewportInfo.scale * 100)}%</span>
+              <button
+                type='button'
+                className='mf-dock-btn mf-dock-btn--icon'
+                title='Zoom in'
+                aria-label='Zoom in'
+                disabled={!session}
+                onClick={() => mindMapRef.current?.zoomIn()}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round' aria-hidden>
+                  <path d='M12 5v14M5 12h14' />
+                </svg>
+              </button>
+              <button
+                type='button'
+                className='mf-dock-btn mf-dock-btn--icon'
+                title='Fit to view'
+                aria-label='Fit to view'
+                disabled={!session}
+                onClick={() => mindMapRef.current?.fit()}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden>
+                  <path d='M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4' />
+                </svg>
+              </button>
+            </div>
+
+            <div className='mf-dock-slot'>
+              <button
+                type='button'
+                className={`mf-dock-btn mf-dock-btn--icon${dockPopover === 'position' ? ' active' : ''}`}
+                title='Move the bar — top, bottom, left, or right'
+                aria-label='Move the bar'
+                aria-pressed={dockPopover === 'position'}
+                onClick={() => setDockPopover((p) => (p === 'position' ? null : 'position'))}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round' aria-hidden>
+                  <rect x='3.5' y='3.5' width='17' height='17' rx='3' />
+                  <path d='M12 7v10M7 12h10' opacity='0.55' strokeDasharray='1.6 2.4' />
+                </svg>
+              </button>
+              <div
+                className={`mf-dock-pop mf-dock-pop--position${dockPopover === 'position' ? ' is-open' : ''}`}
+                aria-hidden={dockPopover !== 'position'}
+                role='group'
+                aria-label='Bar position'
+              >
+                <p className='mf-dock-pop__title'>Place bar</p>
+                <div className='mf-position-grid'>
+                  <button
+                    type='button'
+                    className={`mf-position-tile mf-position-tile--top${dockPosition === 'top' ? ' active' : ''}`}
+                    aria-pressed={dockPosition === 'top'}
+                    title='Top'
+                    onClick={() => setDockPositionAndClose('top')}
+                  >
+                    <svg viewBox='0 0 32 24' aria-hidden>
+                      <rect x='1.5' y='1.5' width='29' height='21' rx='3' className='mf-position-tile__frame' />
+                      <rect x='6' y='4.5' width='20' height='3.5' rx='1.75' className='mf-position-tile__pill' />
+                    </svg>
+                    <span>Top</span>
+                  </button>
+                  <button
+                    type='button'
+                    className={`mf-position-tile mf-position-tile--right${dockPosition === 'right' ? ' active' : ''}`}
+                    aria-pressed={dockPosition === 'right'}
+                    title='Right'
+                    onClick={() => setDockPositionAndClose('right')}
+                  >
+                    <svg viewBox='0 0 32 24' aria-hidden>
+                      <rect x='1.5' y='1.5' width='29' height='21' rx='3' className='mf-position-tile__frame' />
+                      <rect x='24' y='4.5' width='3.5' height='15' rx='1.75' className='mf-position-tile__pill' />
+                    </svg>
+                    <span>Right</span>
+                  </button>
+                  <button
+                    type='button'
+                    className={`mf-position-tile mf-position-tile--bottom${dockPosition === 'bottom' ? ' active' : ''}`}
+                    aria-pressed={dockPosition === 'bottom'}
+                    title='Bottom'
+                    onClick={() => setDockPositionAndClose('bottom')}
+                  >
+                    <svg viewBox='0 0 32 24' aria-hidden>
+                      <rect x='1.5' y='1.5' width='29' height='21' rx='3' className='mf-position-tile__frame' />
+                      <rect x='6' y='16' width='20' height='3.5' rx='1.75' className='mf-position-tile__pill' />
+                    </svg>
+                    <span>Bottom</span>
+                  </button>
+                  <button
+                    type='button'
+                    className={`mf-position-tile mf-position-tile--left${dockPosition === 'left' ? ' active' : ''}`}
+                    aria-pressed={dockPosition === 'left'}
+                    title='Left'
+                    onClick={() => setDockPositionAndClose('left')}
+                  >
+                    <svg viewBox='0 0 32 24' aria-hidden>
+                      <rect x='1.5' y='1.5' width='29' height='21' rx='3' className='mf-position-tile__frame' />
+                      <rect x='4.5' y='4.5' width='3.5' height='15' rx='1.75' className='mf-position-tile__pill' />
+                    </svg>
+                    <span>Left</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <button
+              type='button'
+              className='mf-bottom-dock__close'
+              title='Hide controls'
+              aria-label='Hide workspace controls'
+              onClick={() => {
+                setDockPopover(null)
+                setDockOpen(false)
+              }}
+            >
+              <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='round' aria-hidden>
+                <path d='M6 6l12 12M6 18L18 6' />
+              </svg>
+            </button>
+          </div>
+        </nav>
+        ) : (
+          <button
+            type='button'
+            className={`mf-bottom-dock-handle mf-bottom-dock-handle--${dockPosition}`}
+            title='Show workspace controls'
+            aria-label='Show workspace controls'
+            onClick={() => setDockOpen(true)}
+          >
+            <span className='mf-bottom-dock-handle__grip' aria-hidden />
+          </button>
+        )}
+        </div>
 
         {showRightPanel ? (
         <aside className='mf-chat' aria-label='Inspector'>
@@ -2119,7 +2436,7 @@ export function WorkspaceCanvasPage() {
               {deleteConfirm.links.length} connection{deleteConfirm.links.length === 1 ? '' : 's'}.
             </p>
             <p className='ws-delete-modal-sub'>
-              You can instantly undo/redo with Ctrl+Z / Ctrl+Y or the split Undo/Redo control in the rail.
+              You can instantly undo/redo with Ctrl+Z / Ctrl+Y or the Undo/Redo buttons in the bottom bar.
             </p>
             <div className='ws-delete-modal-actions'>
               <button type='button' className='secondary' onClick={() => setDeleteConfirm(null)}>
@@ -2148,7 +2465,7 @@ export function WorkspaceCanvasPage() {
               .
             </p>
             <p className='ws-delete-modal-sub'>
-              You can instantly undo/redo with Ctrl+Z / Ctrl+Y or the split Undo/Redo control in the rail.
+              You can instantly undo/redo with Ctrl+Z / Ctrl+Y or the Undo/Redo buttons in the bottom bar.
             </p>
             <div className='ws-delete-modal-actions'>
               <button type='button' className='secondary' onClick={() => setLinkDeleteConfirm(null)}>
