@@ -2,6 +2,9 @@ import { supabase } from './supabase'
 
 export type SessionMode = 'research' | 'plan'
 
+export const LAYOUT_MODES = ['radial', 'tree', 'grid', 'web'] as const
+export type LayoutMode = (typeof LAYOUT_MODES)[number]
+
 function resolveApiBase(): string {
   const envBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim()
   if (envBase) return envBase.replace(/\/+$/, '')
@@ -42,6 +45,7 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
 interface SessionCreatePayload {
   title: string
   mode: SessionMode
+  layout_mode?: LayoutMode
   /** Used for slug when title slugifies to empty (e.g. first prompt). */
   slug_source?: string
 }
@@ -101,6 +105,7 @@ export interface SessionDetail {
   user_id?: number | null
   title: string
   mode: SessionMode
+  layout_mode: LayoutMode
   created_at: string
   updated_at: string
   nodes: NodeOut[]
@@ -317,6 +322,28 @@ export async function updateSessionTitle(
   return request<SessionListItem>(`/sessions/${sessionRef}`, {
     method: 'PATCH',
     body: JSON.stringify({ title }),
+  })
+}
+
+export async function updateSessionLayoutMode(
+  sessionRef: string | number,
+  layout_mode: LayoutMode,
+): Promise<SessionListItem & { layout_mode: LayoutMode }> {
+  return request(`/sessions/${sessionRef}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ layout_mode }),
+  })
+}
+
+/** Recompute layout positions on the server. If `mode` is provided it is also
+ * persisted as the session's new layout_mode in the same call. */
+export async function relayoutSession(
+  sessionRef: string | number,
+  mode?: LayoutMode,
+): Promise<{ layout_mode: LayoutMode; moved: NodeOut[] }> {
+  return request(`/sessions/${sessionRef}/relayout`, {
+    method: 'POST',
+    body: JSON.stringify(mode ? { mode } : {}),
   })
 }
 

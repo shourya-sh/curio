@@ -22,8 +22,12 @@ child topic labels. Your job is to fill in planning-focused content for each chi
 - summary: 1-2 sentence action description
 - details: Concrete steps, checklists, considerations. Focus on "what to do"
   not "what to know". Be practical and specific. Don't over-research — the user
-  wants a plan, not an encyclopedia.
-- subtopics: 3-5 bullet-point action items or sub-steps
+  wants a plan, not an encyclopedia. **Stay under the parent's umbrella:** every
+  step should obviously belong to this child topic as part of that parent's plan.
+  Where assumptions are untested or org-specific, say "verify X" instead of bluffing.
+  No padded steps or buzzword soup.
+- subtopics: bullet-point action items or sub-steps; scale count to how much
+  the parent implies (often 3-8). Each bullet must be a real next move.
 - palette_role: one of root, branch_a, branch_b, branch_c, branch_d, branch_e, emphasis, neutral
 
 Also provide 3-6 reference sources (policies, specs, playbooks, tools).

@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
 import { NodeColorField } from '../components/workspace/NodeColorField'
 import { MindMapCanvas } from '../components/workspace/MindMapCanvas'
+import { LayoutModePanel } from '../components/workspace/LayoutModePanel'
 import { CANVAS_H, CANVAS_W } from '../lib/canvasConstants'
 import {
   bulkUpdateNodes,
@@ -13,10 +14,12 @@ import {
   deleteLink,
   getSession,
   postSessionPromptStream,
+  relayoutSession,
   restoreLink,
   restoreNode,
   updateLink,
   updateNode,
+  type LayoutMode,
   type LinkLineStyle,
   type LinkOut,
   type LinkUpdatePayload,
@@ -323,6 +326,7 @@ export function WorkspaceCanvasPage() {
   const [streaming, setStreaming] = useState(false)
   const [placeNodeMode, setPlaceNodeMode] = useState(false)
   const [connectMode, setConnectMode] = useState(false)
+  const [layoutSwitching, setLayoutSwitching] = useState(false)
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
   const [pendingPos, setPendingPos] = useState<Map<number, { x: number; y: number }>>(() => new Map())
   const [fitContentNonce, setFitContentNonce] = useState(0)
@@ -811,6 +815,45 @@ export function WorkspaceCanvasPage() {
     setFitContentNonce((x) => x + 1)
   }, [])
 
+  const handleLayoutModeChange = useCallback(
+    async (mode: LayoutMode) => {
+      if (!session || layoutSwitching) return
+      if (session.layout_mode === mode) return
+      setLayoutSwitching(true)
+      setErrorBanner(null)
+      // Optimistic mode update so the panel highlight responds instantly.
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+        current ? { ...current, layout_mode: mode } : current,
+      )
+      try {
+        await flushDirtyPositions()
+        const result = await relayoutSession(session.id, mode)
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) => {
+          if (!current) return current
+          const byId = new Map(result.moved.map((n) => [n.id, n]))
+          return {
+            ...current,
+            layout_mode: result.layout_mode,
+            nodes: current.nodes.map((node) => byId.get(node.id) ?? node),
+          }
+        })
+        setAnimatePositions(true)
+        setTimeout(() => setAnimatePositions(false), 600)
+        setFitContentNonce((x) => x + 1)
+      } catch (error) {
+        // Roll back the optimistic switch on failure.
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+          current ? { ...current, layout_mode: session.layout_mode } : current,
+        )
+        const message = error instanceof Error ? error.message : 'Failed to switch layout mode.'
+        setErrorBanner(message)
+      } finally {
+        setLayoutSwitching(false)
+      }
+    },
+    [flushDirtyPositions, layoutSwitching, queryClient, session, workspaceSlug],
+  )
+
   const onConnectWire = useCallback(
     (fromId: number, toId: number) => {
       if (!session) return
@@ -1004,6 +1047,17 @@ export function WorkspaceCanvasPage() {
       if (event.type === 'sources_created') {
         const data = event.data as { sources?: ResearchSource[] }
         setSourcesList(data.sources ?? [])
+        return
+      }
+      if (event.type === 'layout_mode_changed') {
+        const data = event.data as { layout_mode?: string; reason?: string }
+        const nextMode = data.layout_mode as LayoutMode | undefined
+        if (!nextMode) return
+        queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], (current) =>
+          current ? { ...current, layout_mode: nextMode } : current,
+        )
+        setAnimatePositions(true)
+        setTimeout(() => setAnimatePositions(false), 700)
         return
       }
       if (event.type === 'error') {
@@ -1525,6 +1579,13 @@ export function WorkspaceCanvasPage() {
         </div>
 
         <section ref={canvasRef} className='mf-canvas mf-canvas--live'>
+          {session ? (
+            <LayoutModePanel
+              value={session.layout_mode}
+              onChange={handleLayoutModeChange}
+              disabled={layoutSwitching || streaming}
+            />
+          ) : null}
           {loading ? (
             <p className='mf-canvas-hint'>Loading project…</p>
           ) : !session ? (

@@ -7,15 +7,24 @@ from uuid import UUID
 class SessionCreate(BaseModel):
     title: str
     mode: str = "research"
+    layout_mode: str = "radial"
     # Optional (e.g. first prompt) when title slugifies to empty.
     slug_source: Optional[str] = None
 
 class SessionUpdate(BaseModel):
-    title: str
+    """Patch a session. All fields optional — only provided ones are updated."""
+    title: Optional[str] = None
+    layout_mode: Optional[str] = None
 
 class SessionPrompt(BaseModel):
     prompt: str
     anchor_node_id: Optional[int] = None
+
+
+class SessionRelayout(BaseModel):
+    """Optional override for the on-demand relayout endpoint. When `mode` is
+    omitted the session's stored layout_mode wins."""
+    mode: Optional[str] = None
 
 
 class NodeOut(BaseModel):
@@ -70,6 +79,7 @@ class SessionDetail(BaseModel):
     user_id: Optional[str | UUID] = None
     title: str
     mode: str
+    layout_mode: str = "radial"
     created_at: datetime
     updated_at: datetime
     nodes: List[NodeOut] = []

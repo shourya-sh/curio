@@ -2,12 +2,20 @@
 from logger import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import StreamingResponse
-from models.session_models import SessionCreate, SessionUpdate, SessionPrompt, SessionDetail
+from models.session_models import (
+    NodeOut,
+    SessionCreate,
+    SessionDetail,
+    SessionPrompt,
+    SessionRelayout,
+    SessionUpdate,
+)
 from models.tables import SessionTable
 from sqlalchemy.orm import Session, joinedload
 from db import get_db, SessionLocal
 
 from auth import get_current_user
+from services import graph_service, layout_engine
 from services.graph_service import verify_session_owner
 from services.profile_service import get_user_api_keys
 from services.rate_limit import limit_ai_prompt
@@ -24,7 +32,14 @@ logger = get_logger("session_router")
 def create_session(body: SessionCreate, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     base = base_slug_for_new_session(body.title, body.slug_source)
     slug = allocate_unique_slug(db, base)
-    new_session = SessionTable(title=body.title, mode=body.mode, slug=slug, user_id=user_id)
+    layout_mode = body.layout_mode if body.layout_mode in layout_engine.LAYOUT_MODES else "radial"
+    new_session = SessionTable(
+        title=body.title,
+        mode=body.mode,
+        layout_mode=layout_mode,
+        slug=slug,
+        user_id=user_id,
+    )
     db.add(new_session)
     db.commit()
     db.refresh(new_session)
@@ -51,15 +66,48 @@ def get_session(session_id: str, db: Session = Depends(get_db), user_id: str = D
         session.messages.sort(key=lambda m: (m.created_at.timestamp() if m.created_at else 0, m.id))
     return session
 
-# update title of session
+# update title and/or layout_mode of session
 @router.patch("/{session_id}")
 def update_session(session_id: str, body: SessionUpdate, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     pk = resolve_session_pk_or_404(session_id, db)
     session = verify_session_owner(db, pk, user_id)
-    session.title = body.title
+    if body.title is not None:
+        session.title = body.title
+    if body.layout_mode is not None:
+        if body.layout_mode not in layout_engine.LAYOUT_MODES:
+            raise HTTPException(status_code=400, detail=f"layout_mode must be one of {layout_engine.LAYOUT_MODES}")
+        session.layout_mode = body.layout_mode
     db.commit()
     db.refresh(session)
     return session
+
+
+# Recompute layout positions for a session and return the moved nodes. Used by
+# the LayoutModePanel after switching modes, or as an explicit "tidy up".
+@router.post("/{session_id}/relayout")
+def relayout_session(
+    session_id: str,
+    body: SessionRelayout,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user),
+):
+    pk = resolve_session_pk_or_404(session_id, db)
+    session = verify_session_owner(db, pk, user_id)
+    chosen = body.mode if body.mode is not None else session.layout_mode
+    if chosen not in layout_engine.LAYOUT_MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of {layout_engine.LAYOUT_MODES}")
+    # Persist the chosen mode if it differs (one click both saves + applies).
+    if body.mode is not None and body.mode != session.layout_mode:
+        session.layout_mode = body.mode
+    moves = layout_engine.apply_layout(db, pk, mode=chosen)
+    db.commit()
+    moved_ids = {nid for nid, _, _ in moves}
+    refreshed = [
+        NodeOut.model_validate(n).model_dump(mode="json")
+        for n in graph_service.list_nodes(db, pk)
+        if n.id in moved_ids
+    ]
+    return {"layout_mode": chosen, "moved": refreshed}
 
 # delete session, cascades to nodes and links + chat histoire
 @router.delete("/{session_id}")

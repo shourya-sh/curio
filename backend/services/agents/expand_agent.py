@@ -14,16 +14,36 @@ from ai import call_gemini_json
 from logger import get_logger
 from models.session_models import NodeOut, LinkOut, MessageOut
 from models.tables import NodeTable
-from services import graph_service, message_service
+from services import graph_service, layout_engine, message_service
 from services.agents import research_agent, plan_agent
 from services.agents.draft_models import ExpandResult
-from services.agents.reposition import reposition_children
 from services.graph_palette import node_color
 
 logger = get_logger("expand_agent")
 
 SYSTEM_PROMPT = """You are Curio's Expand Agent.
-Given a parent node, propose 3-5 subtopics that branch from it.
+Given a parent node and the user's request (see JSON: full_user_request,
+optional expand_focus), propose **child topic labels** that branch from this parent.
+
+**How many subtopics (adaptive — no fixed cap):**
+- Match breadth to what the user needs for a *complete mental model* of this
+  parent, not a token outline. Narrow follow-ups or one-axis questions: fewer
+  (often 4-7). Broad "how does X work", supply chains, systems, comparisons, or
+  anything the user signals should be thorough: **many** distinct pillars
+  (often 10-18 from this parent alone when the topic is genuinely sprawling).
+- If the user sets boundaries ("only EU", "no politics", "high school level"),
+  honor them strictly — fewer branches is fine if constraints shrink scope.
+- If the user signals emotion or urgency (overwhelmed, anxious, "need the full
+  picture"), adjust: either more gentle, chunked branches OR fewer deeper ones
+  as the wording suggests — but never leave obvious major facets unstated.
+- Never pad: every label must be a real facet a learner would open next.
+- **Stay on the guiding question:** `full_user_request` defines the mission.
+  Every child under this parent must clearly advance understanding of *that*
+  thread (and this parent's role in it). Drop tangents even if they sound smart.
+- **Honest scope:** If major unknowns, debate, or context-dependence matter for
+  understanding this parent *in light of the user's request*, include a
+  dedicated label (e.g. "Evidence limits", "Where practice varies by region") —
+  one such branch when warranted, not a pile of meta-nodes.
 
 Return ONLY short topic labels — no details, no summaries.
 Each subtopic should be a distinct, non-overlapping aspect worth exploring.
@@ -31,7 +51,11 @@ Be specific, not generic. Think about what a curious learner would want to
 drill into next."""
 
 
-def _build_user_prompt(parent: NodeTable, user_prompt: str | None) -> str:
+def _build_user_prompt(
+    parent: NodeTable,
+    user_prompt: str | None,
+    session_user_prompt: str | None,
+) -> str:
     ctx = {
         "parent": {
             "topic": parent.topic,
@@ -40,8 +64,10 @@ def _build_user_prompt(parent: NodeTable, user_prompt: str | None) -> str:
             "subtopics": parent.subtopics or [],
         },
     }
-    if user_prompt:
-        ctx["user_guidance"] = user_prompt
+    if session_user_prompt and session_user_prompt.strip():
+        ctx["full_user_request"] = session_user_prompt.strip()
+    if user_prompt and user_prompt.strip():
+        ctx["expand_focus"] = user_prompt.strip()
     return json.dumps(ctx)
 
 
@@ -50,6 +76,7 @@ async def run(
     session_id: int,
     anchor_node_id: int,
     prompt: str | None = None,
+    session_user_prompt: str | None = None,
     mode: str,
     db: Session,
     api_keys: list[str] | None = None,
@@ -68,7 +95,7 @@ async def run(
 
     # Step 1: Pick subtopics (1 Gemini call)
     logger.info("  step 1: picking subtopics (gemini call)...")
-    user_prompt = _build_user_prompt(parent, prompt)
+    user_prompt = _build_user_prompt(parent, prompt, session_user_prompt)
     expand_result: ExpandResult = await call_gemini_json(
         SYSTEM_PROMPT,
         user_prompt,
@@ -178,10 +205,10 @@ async def run(
                 },
             }
 
-    # Step 5: Reposition children around parent
-    logger.info("  step 5: repositioning %d children around parent...", len(created_node_ids))
-    moved = reposition_children(db, session_id, parent)
-    logger.info("  repositioned %d nodes", len(moved))
+    # Step 5: Recompute layout (overlap-free, single source of truth)
+    logger.info("  step 5: recomputing layout for %d new children...", len(created_node_ids))
+    moved = layout_engine.apply_layout(db, session_id)
+    logger.info("  layout updated %d nodes", len(moved))
     for node_id, x, y in moved:
         yield {"type": "node_updated", "data": {"id": node_id, "session_id": session_id, "position_x": x, "position_y": y}}
 

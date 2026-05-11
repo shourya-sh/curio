@@ -181,6 +181,16 @@ def _is_gemini_invalid_api_key_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_gemini_transient_server_error(exc: BaseException) -> bool:
+    """5xx-style server errors that are NOT per-key issues (overloaded model, timeout, etc.).
+    These should retry across keys, then fall back to a different model — not re-raise immediately."""
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if code in (500, 502, 503, 504):
+        return True
+    msg = str(exc).upper()
+    return any(s in msg for s in ("UNAVAILABLE", "INTERNAL ERROR", "DEADLINE_EXCEEDED", "BACKEND_ERROR"))
+
+
 def _gemini_retry_after_seconds(exc: BaseException, default: float = 15.0) -> float:
     text = str(exc)
     m = re.search(r"retry in ([\d.]+)\s*s", text, re.I)
@@ -229,7 +239,7 @@ async def _try_one_model(
         return None, ValueError("No live Gemini API keys available"), {}
     n = len(keys)
     last_exc: BaseException | None = None
-    counters = {"rl": 0, "zero_quota": 0, "invalid": 0, "other": 0}
+    counters = {"rl": 0, "zero_quota": 0, "invalid": 0, "transient": 0, "other": 0}
 
     for i in range(n):
         if api_keys:
@@ -261,6 +271,11 @@ async def _try_one_model(
                     "Gemini permanently disabled one bad key in this process (pool: %s live).",
                     len(_live_keys()),
                 )
+                continue
+            if _is_gemini_transient_server_error(e):
+                # Server-side overload/timeout — retry on the next key, then on a fallback model.
+                counters["transient"] += 1
+                logger.warning("Gemini transient server error on model=%s (key %d/%d): %s", model, i + 1, n, e)
                 continue
             counters["other"] += 1
             logger.error(f"Gemini call failed (model={model}): {e}")
@@ -304,10 +319,10 @@ async def _generate_gemini(
     last_exc: BaseException | None = None
     last_rl_exc: BaseException | None = None
 
-    rate_limit_passes_per_model = 2
+    retry_passes_per_model = 3
     for model in _candidate_models():
         models_tried.append(model)
-        for rl_pass in range(rate_limit_passes_per_model):
+        for rl_pass in range(retry_passes_per_model):
             response, exc, counters = await _try_one_model(
                 model=model,
                 contents=contents,
@@ -331,17 +346,24 @@ async def _generate_gemini(
                 )
                 break
 
-            if counters.get("rl", 0) + counters.get("zero_quota", 0) >= n_live:
+            transient_total = counters.get("rl", 0) + counters.get("zero_quota", 0) + counters.get("transient", 0)
+            if transient_total >= n_live:
                 last_rl_exc = exc or last_rl_exc
-                if rl_pass >= rate_limit_passes_per_model - 1:
+                if rl_pass >= retry_passes_per_model - 1:
+                    logger.warning(
+                        "All %s live Gemini key(s) failed on model=%s (rl=%s, transient=%s) — advancing to fallback model.",
+                        n_live, model, counters.get("rl", 0), counters.get("transient", 0),
+                    )
                     break
-                base = _gemini_retry_after_seconds(last_rl_exc, default=4.0)
-                delay = min(base, 6.0) if n_live > 1 else min(base, 20.0)
+                # Backoff: transient 5xx → fast retry; rate limited → honour Retry-After.
+                if counters.get("transient", 0) >= counters.get("rl", 0):
+                    delay = 1.5 * (2 ** rl_pass)  # 1.5s, 3s, 6s
+                else:
+                    base = _gemini_retry_after_seconds(last_rl_exc, default=4.0)
+                    delay = min(base, 6.0) if n_live > 1 else min(base, 20.0)
                 logger.warning(
-                    "All %s live Gemini key(s) rate limited on model=%s; sleeping %.1fs then retrying.",
-                    n_live,
-                    model,
-                    delay,
+                    "All %s live Gemini key(s) failed (rl=%s, transient=%s) on model=%s; sleeping %.1fs then retrying.",
+                    n_live, counters.get("rl", 0), counters.get("transient", 0), model, delay,
                 )
                 await asyncio.sleep(delay)
                 continue

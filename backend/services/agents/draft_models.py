@@ -128,5 +128,12 @@ class ExpandedTopic(BaseModel):
 
 
 class ExpandResult(BaseModel):
-    """Output of expand_agent: list of subtopic labels."""
-    subtopics: list[ExpandedTopic] = Field(default_factory=list)
+    """Output of expand_agent: list of subtopic labels (count is adaptive)."""
+    subtopics: list[ExpandedTopic] = Field(
+        default_factory=list,
+        description=(
+            "Child topic labels under the parent. Use as many as the user's "
+            "goals and topic complexity require — large maps are expected when "
+            "they ask for depth or full understanding."
+        ),
+    )

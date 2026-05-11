@@ -16,6 +16,9 @@ class SessionTable(Base):
     slug = Column(String(255), nullable=False, unique=True)
     title = Column(String(255), nullable=False)
     mode = Column(String(10), nullable=False, default="research")
+    # Layout pattern picked by the user. Drives the layout_engine dispatch
+    # (radial | tree | grid | web). See `services.layout_engine.LAYOUT_MODES`.
+    layout_mode = Column(String(20), nullable=False, default="radial")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 

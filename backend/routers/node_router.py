@@ -92,6 +92,14 @@ def bulk_update_nodes(session_id: str, body: NodeBulkUpdate, db: Session = Depen
 def delete_node(session_id: str, node_id: int, db: Session = Depends(get_db), user_id: str = Depends(get_current_user)):
     sid = resolve_session_pk_or_404(session_id, db)
     verify_session_owner(db, sid, user_id)
+    # Single-root invariant: the root may never be deleted.
+    nodes = graph_service.list_nodes(db, sid)
+    links = graph_service.list_links(db, sid)
+    children_with_parent = {lnk.child_id for lnk in links}
+    roots = [n for n in nodes if n.id not in children_with_parent] or nodes
+    root_id = min((n.id for n in roots), default=None)
+    if node_id == root_id:
+        raise HTTPException(status_code=400, detail="Cannot delete the root node — every map must have exactly one root.")
     if not graph_service.delete_node(db, sid, node_id):
         raise HTTPException(status_code=404, detail="Node not found")
     db.commit()

@@ -337,10 +337,10 @@ export function MindMapCanvas({
       }
       const nx = d.startNode.x + (l.x - d.startPointer.x)
       const ny = d.startNode.y + (l.y - d.startPointer.y)
-      const nodeRow = nodes.find((o) => o.id === d.id)
-      const box = nodeRow ? readNodeBoxPx(nodeRow) : { width: DEFAULT_NODE_RADIUS * 2, height: DEFAULT_NODE_RADIUS * 2 }
-      const sx = snapCoord(Math.max(box.width / 2, Math.min(CANVAS_W - box.width / 2, nx)))
-      const sy = snapCoord(Math.max(box.height / 2, Math.min(CANVAS_H - box.height / 2, ny)))
+      // Free positioning — no canvas clamp. The viewport pans/zooms anywhere
+      // the user drops a node; agent layouts still cluster near the centre.
+      const sx = snapCoord(nx)
+      const sy = snapCoord(ny)
       onDragEnd(d.id, sx, sy)
       setDrag(null)
       setMovePointer(null)
@@ -384,9 +384,8 @@ export function MindMapCanvas({
       const cur = clientToLogical(e.clientX, e.clientY)
       const rRaw = Math.hypot(cur.x - draft.cx, cur.y - draft.cy)
       const r = Math.min(MAX_NODE_RADIUS, Math.max(MIN_NODE_RADIUS, rRaw < 12 ? DEFAULT_NODE_RADIUS : rRaw))
-      const cx = snapCoord(Math.max(r, Math.min(CANVAS_W - r, draft.cx)))
-      const cy = snapCoord(Math.max(r, Math.min(CANVAS_H - r, draft.cy)))
-      onPlaceNodeComplete(cx, cy, r)
+      // No canvas clamp — drop node anywhere the user drew it.
+      onPlaceNodeComplete(snapCoord(draft.cx), snapCoord(draft.cy), r)
     }
     window.addEventListener('pointermove', onMove, { passive: false })
     window.addEventListener('pointerup', onUp, { passive: true })
@@ -460,9 +459,8 @@ export function MindMapCanvas({
       if (placeNodeMode) {
         e.preventDefault()
         const l = clientToLogical(e.clientX, e.clientY)
-        const cx = Math.max(MIN_NODE_RADIUS, Math.min(CANVAS_W - MIN_NODE_RADIUS, l.x))
-        const cy = Math.max(MIN_NODE_RADIUS, Math.min(CANVAS_H - MIN_NODE_RADIUS, l.y))
-        setPlaceDraft({ cx, cy, r: MIN_NODE_RADIUS })
+        // Free placement — wherever the user clicked.
+        setPlaceDraft({ cx: l.x, cy: l.y, r: MIN_NODE_RADIUS })
         try {
           hitRef.current?.setPointerCapture(e.pointerId)
         } catch {

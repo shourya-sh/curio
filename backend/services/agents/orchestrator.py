@@ -10,6 +10,7 @@ from logger import get_logger
 from models.session_models import MessageOut
 from services import graph_service, message_service
 from services.agents import context_agent, expand_agent
+from services.agents.context_agent import _friendly_error
 
 logger = get_logger("orchestrator")
 
@@ -31,25 +32,36 @@ async def run_pipeline(
     user_message = message_service.create_user_message(db, session_id, prompt)
     yield {"type": "message_created", "data": MessageOut.model_validate(user_message).model_dump(mode="json")}
 
-    if anchor_node_id:
-        logger.info("  → routing to EXPAND AGENT (node_id=%d)", anchor_node_id)
-        async for event in expand_agent.run(
-            session_id=session_id,
-            anchor_node_id=anchor_node_id,
-            prompt=prompt,
-            mode=mode,
-            db=db,
-            api_keys=api_keys,
-        ):
-            yield event
-    else:
-        logger.info("  → routing to CONTEXT AGENT (free text)")
-        async for event in context_agent.run(
-            session_id=session_id,
-            prompt=prompt,
-            mode=mode,
-            db=db,
-            api_keys=api_keys,
-        ):
-            yield event
+    try:
+        if anchor_node_id:
+            logger.info("  → routing to EXPAND AGENT (node_id=%d)", anchor_node_id)
+            async for event in expand_agent.run(
+                session_id=session_id,
+                anchor_node_id=anchor_node_id,
+                prompt=None,
+                session_user_prompt=prompt or None,
+                mode=mode,
+                db=db,
+                api_keys=api_keys,
+            ):
+                yield event
+        else:
+            logger.info("  → routing to CONTEXT AGENT (free text)")
+            async for event in context_agent.run(
+                session_id=session_id,
+                prompt=prompt,
+                mode=mode,
+                db=db,
+                api_keys=api_keys,
+            ):
+                yield event
+    except Exception as exc:
+        # Last-resort net: any uncaught failure from either agent (e.g. Gemini
+        # 503 in expand_agent's first call) must surface to the user instead of
+        # leaving them with no nodes and no message.
+        logger.error("Pipeline failed session=%d: %s", session_id, exc, exc_info=True)
+        friendly = _friendly_error(exc)
+        yield {"type": "error", "data": {"message": friendly}}
+        sys_msg = message_service.create_message(db, session_id, "system", f"⚠️ {friendly}")
+        yield {"type": "message_created", "data": MessageOut.model_validate(sys_msg).model_dump(mode="json")}
     logger.info("━━━ PIPELINE END session=%d ━━━", session_id)

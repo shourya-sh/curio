@@ -22,7 +22,15 @@ child topic labels. Your job is to fill in rich content for each child:
 - summary: 1-2 sentence overview
 - details: Multi-paragraph explanation with depth. Be thorough — this is the
   main content users read. Include key concepts, mechanisms, examples.
-- subtopics: 3-6 bullet-point sub-items that could be expanded further
+  **Tie content to the parent's topic** so every paragraph answers why this
+  node exists under that parent. No off-topic digressions or generic "AI essay"
+  filler. Do not invent precise statistics, dates, or claims you cannot stand
+  behind; when something is uncertain, disputed, or context-dependent, say so
+  plainly and what would be needed to pin it down — still in service of this
+  node's angle under the parent.
+- subtopics: bullet-point sub-items for further expansion; use more when the
+  node is dense (often 4-9), fewer when the topic is already narrow. Each bullet
+  must be a concrete next drill-down, not fluff.
 - palette_role: one of root, branch_a, branch_b, branch_c, branch_d, branch_e, emphasis, neutral
 
 Also provide 4-8 research sources that support the nodes. Each source should

@@ -4,11 +4,12 @@ import { snapCoord } from './canvasConstants'
 
 const BODY_GAP = 116
 const LAYER_GAP = 280
-const EDGE_MARGIN = 120
 
 /**
- * Quick seed position for a newly streamed node.
- * No BFS — just parent lookup + child count for offset.
+ * Quick seed position for a newly streamed node before the agent's layout
+ * pass arrives. No BFS, no clamps — just parent + sibling-count offset.
+ * The backend's `layout_engine.apply_layout()` produces the final canonical
+ * positions a moment later via `node_updated` SSE events.
  */
 export function seedNodePosition(
   parentId: number | null | undefined,
@@ -20,7 +21,7 @@ export function seedNodePosition(
   if (!parent) return { x: CANVAS_W / 2, y: CANVAS_H / 2 }
   const siblingCount = links.filter((l) => l.parent_id === parentId).length
   return {
-    x: snapCoord(Math.min(CANVAS_W - EDGE_MARGIN, parent.position_x + LAYER_GAP)),
-    y: snapCoord(Math.max(EDGE_MARGIN, Math.min(CANVAS_H - EDGE_MARGIN, parent.position_y + BODY_GAP * siblingCount))),
+    x: snapCoord(parent.position_x + LAYER_GAP),
+    y: snapCoord(parent.position_y + BODY_GAP * siblingCount),
   }
 }
