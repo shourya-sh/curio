@@ -124,6 +124,7 @@ export interface NodeCreatePayload {
   original_position_y?: number
   node_type?: string
   color?: string | null
+  depth?: number
   /** JSONB: list from AI, or `{ radiusPx }` for manual node size. */
   subtopics?: unknown
 }
@@ -184,6 +185,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
     })
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
     const message = error instanceof Error ? error.message : 'Network request failed'
     throw new Error(`Cannot reach API at ${API_BASE}${path}. ${message}`)
   }
@@ -200,20 +204,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export async function createSession(payload: SessionCreatePayload): Promise<SessionListItem> {
+export async function createSession(
+  payload: SessionCreatePayload,
+  options?: { signal?: AbortSignal },
+): Promise<SessionListItem> {
   return request<SessionListItem>('/sessions/', {
     method: 'POST',
     body: JSON.stringify(payload),
+    signal: options?.signal,
   })
 }
 
 export async function createNode(
   sessionRef: string | number,
   payload: NodeCreatePayload,
+  options?: { signal?: AbortSignal },
 ): Promise<NodeOut> {
   return request<NodeOut>(`/sessions/${sessionRef}/nodes/`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    signal: options?.signal,
   })
 }
 

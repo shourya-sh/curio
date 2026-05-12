@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
+import { CurioGenerationOverlay, type GenerationOverlayStep } from '../components/CurioGenerationOverlay'
 import { DecorativePageBackground } from '../components/DecorativePageBackground'
-import { createNode, createSession, listSessions, type SessionListItem } from '../lib/api'
+import { createNode, createSession, deleteSession, listSessions, type SessionListItem } from '../lib/api'
+import { isAbortError } from '../lib/generationUi'
 import { sessionListQueryKey } from '../lib/queryClient'
 import { formatSessionUpdatedAt } from '../lib/sessionDisplay'
 import { readRecentSessionRefs, recordSessionOpened } from '../lib/sessionRecent'
@@ -19,6 +21,8 @@ export function DashboardHomePage() {
   const [showEmptyModal, setShowEmptyModal] = useState(false)
   const [showNamingModal, setShowNamingModal] = useState(false)
   const [projectTitle, setProjectTitle] = useState('')
+  const [homeGenPhase, setHomeGenPhase] = useState(0)
+  const createAbortRef = useRef<AbortController | null>(null)
 
   const sessionsQuery = useQuery({
     queryKey: sessionListQueryKey,
@@ -30,20 +34,40 @@ export function DashboardHomePage() {
 
   const createProjectMutation = useMutation({
     mutationFn: async (variables: { title: string; mode: HomeMode; prompt: string }) => {
-      const session = await createSession({
-        title: variables.title,
-        mode: variables.mode,
-        slug_source: variables.prompt.trim() || undefined,
-      })
-      const centerNode = await createNode(workspacePathSegment(session), {
-        topic: variables.prompt,
-        summary:
-          variables.mode === 'research' ? 'Initial research focus' : 'Initial planning focus',
-        details: variables.prompt,
-      })
-      return { session, variables, centerNodeId: centerNode.id }
+      const signal = createAbortRef.current?.signal
+      const session = await createSession(
+        {
+          title: variables.title,
+          mode: variables.mode,
+          slug_source: variables.prompt.trim() || undefined,
+        },
+        { signal },
+      )
+      try {
+        const centerNode = await createNode(
+          workspacePathSegment(session),
+          {
+            topic: variables.prompt,
+            summary:
+              variables.mode === 'research' ? 'Initial research focus' : 'Initial planning focus',
+            details: variables.prompt,
+          },
+          { signal },
+        )
+        return { session, variables, centerNodeId: centerNode.id }
+      } catch (error) {
+        if (isAbortError(error)) {
+          try {
+            await deleteSession(workspacePathSegment(session))
+          } catch {
+            /* best-effort cleanup */
+          }
+        }
+        throw error
+      }
     },
     onMutate: async (variables) => {
+      createAbortRef.current = new AbortController()
       await queryClient.cancelQueries({ queryKey: sessionListQueryKey })
       const previousSessions =
         queryClient.getQueryData<SessionListItem[]>(sessionListQueryKey) ?? []
@@ -67,6 +91,7 @@ export function DashboardHomePage() {
       if (context) {
         queryClient.setQueryData(sessionListQueryKey, context.previousSessions)
       }
+      if (isAbortError(error)) return
       const message =
         error instanceof Error ? error.message : 'Failed to create project session.'
       window.alert(message)
@@ -95,11 +120,47 @@ export function DashboardHomePage() {
       setShowNamingModal(false)
     },
     onSettled: () => {
+      createAbortRef.current = null
       void queryClient.invalidateQueries({ queryKey: sessionListQueryKey })
     },
   })
 
   const submitting = createProjectMutation.isPending
+
+  useEffect(() => {
+    if (!submitting) {
+      setHomeGenPhase(0)
+      return
+    }
+    setHomeGenPhase(0)
+    const id = window.setTimeout(() => setHomeGenPhase(1), 800)
+    return () => window.clearTimeout(id)
+  }, [submitting])
+
+  const homeGenSteps = useMemo((): GenerationOverlayStep[] => {
+    if (!submitting) return []
+    return [
+      {
+        id: 'home-ws',
+        title: 'Workspace agent',
+        detail: 'Creating your project shell and slug',
+        lane: 'lead',
+      },
+      {
+        id: 'home-node',
+        title: 'Map seed agent',
+        detail:
+          homeGenPhase >= 1
+            ? 'Placing your first topic as the center orbit'
+            : 'Waiting for workspace…',
+        lane: 'pulse',
+      },
+    ]
+  }, [submitting, homeGenPhase])
+
+  const cancelCreateProject = () => {
+    createAbortRef.current?.abort()
+  }
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const handlePromptChange = (value: string) => {
@@ -143,11 +204,15 @@ export function DashboardHomePage() {
     const title = projectTitle.trim()
     if (!prompt.trim() || !title || submitting || !selectedMode) return
 
-    await createProjectMutation.mutateAsync({
-      title,
-      mode: selectedMode,
-      prompt: prompt.trim(),
-    })
+    try {
+      await createProjectMutation.mutateAsync({
+        title,
+        mode: selectedMode,
+        prompt: prompt.trim(),
+      })
+    } catch (error) {
+      if (!isAbortError(error)) throw error
+    }
   }
 
   useEffect(() => {
@@ -354,6 +419,19 @@ export function DashboardHomePage() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {submitting ? (
+        <CurioGenerationOverlay
+          open
+          fixed
+          home
+          headline='Spinning up your project'
+          kicker='Curio is provisioning your workspace and first map node.'
+          steps={homeGenSteps}
+          onStop={cancelCreateProject}
+          recoveryHint='Stop cancels creation, rolls back the project list, and removes a partially created workspace on the server when needed.'
+        />
       ) : null}
     </div>
   )

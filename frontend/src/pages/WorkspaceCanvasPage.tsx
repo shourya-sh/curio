@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
+import { CurioGenerationOverlay, type GenerationOverlayStep } from '../components/CurioGenerationOverlay'
 import { NodeColorField } from '../components/workspace/NodeColorField'
 import { MindMapCanvas, type MindMapCanvasHandle, type ViewportSnapshot } from '../components/workspace/MindMapCanvas'
 import { LayoutModePanel } from '../components/workspace/LayoutModePanel'
@@ -30,6 +31,7 @@ import {
   type SessionPromptEvent,
 } from '../lib/api'
 
+import { humanizeAgentToolName, isAbortError } from '../lib/generationUi'
 import { buildManualLinkPayload, buildManualNodePayload, buildNodeStylePatch } from '../lib/manualGraph'
 import { readNodeRadiusPx } from '../lib/nodeDisplay'
 import { nodeOrbStyle } from '../lib/nodeOrbStyle'
@@ -48,6 +50,25 @@ function formatChatTimestamp(iso: string): string {
     return new Date().toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
   }
   return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+}
+
+/** Two-stroke close icon (avoids Unicode × for consistent shape at any size). */
+function UiDismissX({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox='0 0 24 24'
+      fill='none'
+      stroke='currentColor'
+      strokeWidth='2.25'
+      strokeLinecap='round'
+      aria-hidden
+      style={{ display: 'block' }}
+    >
+      <path d='M6 6l12 12M18 6L6 18' />
+    </svg>
+  )
 }
 
 function chatRowsFromSessionMessages(messages: MessageOut[] | undefined): ChatMessage[] {
@@ -77,6 +98,12 @@ interface HistoryEntry {
   syncBackward: () => Promise<unknown>
   localForward?: () => void
   localBackward?: () => void
+}
+
+interface GenerationBaseline {
+  session: SessionDetail
+  chatMessages: ChatMessage[]
+  sourcesList: ResearchSource[]
 }
 
 type RightPanelMode = 'none' | 'ai' | 'nodes' | 'sources'
@@ -368,11 +395,13 @@ export function WorkspaceCanvasPage() {
   const [nodesPanelView, setNodesPanelView] = useState<NodesPanelView>('catalog')
   const [panelNodeId, setPanelNodeId] = useState<number | null>(null)
   const [streaming, setStreaming] = useState(false)
+  const [generationSteps, setGenerationSteps] = useState<GenerationOverlayStep[]>([])
+  const [generationKind, setGenerationKind] = useState<'context' | 'expand'>('context')
   const [placeNodeMode, setPlaceNodeMode] = useState(false)
   const [connectMode, setConnectMode] = useState(false)
   const [layoutSwitching, setLayoutSwitching] = useState(false)
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
-  const [pendingPos, setPendingPos] = useState<Map<number, { x: number; y: number }>>(() => new Map())
+  const [pendingPos] = useState<Map<number, { x: number; y: number }>>(() => new Map())
   const [fitContentNonce, setFitContentNonce] = useState(0)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
@@ -393,6 +422,11 @@ export function WorkspaceCanvasPage() {
   const [linkPopSubmenu, setLinkPopSubmenu] = useState<'color' | 'style' | null>(null)
   const [linkPopPos, setLinkPopPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
   const promptAbortRef = useRef<AbortController | null>(null)
+  const generationBaselineRef = useRef<GenerationBaseline | null>(null)
+  const generationStartedSlugRef = useRef('')
+  const genStepSeqRef = useRef(0)
+  const chatMessagesRef = useRef<ChatMessage[]>([])
+  const sourcesListRef = useRef<ResearchSource[]>([])
   const workspacePageMountedRef = useRef(true)
   const dirtyPositionsRef = useRef<Map<number, { x: number; y: number }>>(new Map())
   const dirtyFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -406,6 +440,14 @@ export function WorkspaceCanvasPage() {
   const streamingLinkIdsRef = useRef<Set<number>>(new Set())
 
   const [animatePositions, setAnimatePositions] = useState(false)
+
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages
+  }, [chatMessages])
+
+  useEffect(() => {
+    sourcesListRef.current = sourcesList
+  }, [sourcesList])
 
   useEffect(() => {
     workspacePageMountedRef.current = true
@@ -904,6 +946,38 @@ export function WorkspaceCanvasPage() {
     setFitContentNonce((x) => x + 1)
   }, [])
 
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null
+      const tag = el?.tagName?.toLowerCase()
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || Boolean(el?.isContentEditable)
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (isTypingTarget(e.target)) return
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+      if (key === 'm') {
+        if (!session) return
+        e.preventDefault()
+        if (!viewportInfo.handToolActive) {
+          setConnectMode(false)
+          setPlaceNodeMode(false)
+        }
+        mindMapRef.current?.setHandTool(!viewportInfo.handToolActive)
+        return
+      }
+      if (key === 'f') {
+        if (!session) return
+        e.preventDefault()
+        mindMapRef.current?.resetView()
+        mindMapRef.current?.fit()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [session, viewportInfo.handToolActive])
+
   const handleLayoutModeChange = useCallback(
     async (mode: LayoutMode) => {
       if (!session || layoutSwitching) return
@@ -1065,7 +1139,17 @@ export function WorkspaceCanvasPage() {
 
   const consumePromptStreamEvent = useCallback(
     (event: SessionPromptEvent) => {
+      const nextStepId = () => {
+        genStepSeqRef.current += 1
+        return `stream-${genStepSeqRef.current}`
+      }
       if (event.type === 'status') {
+        const msg = (event.data as { message?: string }).message?.trim()
+        if (!msg) return
+        setGenerationSteps((prev) => [
+          ...prev,
+          { id: nextStepId(), title: msg, lane: 'pulse' },
+        ])
         return
       }
       if (event.type === 'done') {
@@ -1073,15 +1157,16 @@ export function WorkspaceCanvasPage() {
       }
       if (event.type === 'tool_used') {
         const { tool, args } = event.data as { tool: string; args?: Record<string, unknown> }
-        const label = args?.topic ?? args?.summary ?? ''
-        const display = label ? `${tool}("${label}")` : tool
-        setChatMessages((prev) => [
+        const labelRaw = args?.topic ?? args?.summary ?? args?.name ?? ''
+        const label = typeof labelRaw === 'string' ? labelRaw : labelRaw != null ? String(labelRaw) : ''
+        const title = humanizeAgentToolName(tool)
+        setGenerationSteps((prev) => [
           ...prev,
           {
-            id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            role: 'system' as const,
-            content: `\u{1F527} ${display}`,
-            timestamp: formatChatTimestamp(new Date().toISOString()),
+            id: nextStepId(),
+            title,
+            detail: label ? (label.length > 140 ? `${label.slice(0, 137)}…` : label) : undefined,
+            lane: 'tool',
           },
         ])
         return
@@ -1157,9 +1242,50 @@ export function WorkspaceCanvasPage() {
     [queryClient, workspaceSlug],
   )
 
+  const stopGeneration = useCallback(() => {
+    const slug = generationStartedSlugRef.current
+    const baseline = generationBaselineRef.current
+    promptAbortRef.current?.abort()
+    if (baseline && slug === workspaceSlug) {
+      queryClient.setQueryData<SessionDetail>(['session', workspaceSlug], cloneSession(baseline.session))
+      setChatMessages(baseline.chatMessages.map((m) => ({ ...m })))
+      setSourcesList(baseline.sourcesList.map((s) => ({ ...s })))
+    }
+    streamingNodeIdsRef.current = new Set()
+    streamingLinkIdsRef.current = new Set()
+    setGenerationSteps([])
+    setErrorBanner(null)
+    void queryClient.invalidateQueries({ queryKey: ['session', workspaceSlug] })
+  }, [queryClient, workspaceSlug])
+
   const runSessionPrompt = useCallback(
-    async (prompt: string, anchorNodeId: number | null) => {
+    async (prompt: string, anchorNodeId: number | null, opts?: { baseline?: GenerationBaseline }) => {
       if (!workspaceSlug || !session) return
+      const snap = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug]) ?? session
+      if (!snap) return
+
+      const baseline: GenerationBaseline =
+        opts?.baseline ?? {
+          session: cloneSession(snap),
+          chatMessages: chatMessagesRef.current.map((m) => ({ ...m })),
+          sourcesList: sourcesListRef.current.map((s) => ({ ...s })),
+        }
+      generationBaselineRef.current = baseline
+      generationStartedSlugRef.current = workspaceSlug
+      genStepSeqRef.current = 0
+      setGenerationKind(anchorNodeId != null ? 'expand' : 'context')
+      setGenerationSteps([
+        {
+          id: 'gen-lead-row',
+          title: anchorNodeId != null ? 'Expand agent' : 'Context agent',
+          detail:
+            anchorNodeId != null
+              ? 'Growing new branches from your selected topic'
+              : 'Shaping the map from your latest message',
+          lane: 'lead',
+        },
+      ])
+
       setStreaming(true)
       setErrorBanner(null)
       promptAbortRef.current?.abort()
@@ -1174,14 +1300,12 @@ export function WorkspaceCanvasPage() {
           { signal: ac.signal },
         )
         setFitContentNonce((x) => x + 1)
-        // Enable position transitions briefly for final glide
         setAnimatePositions(true)
         setTimeout(() => setAnimatePositions(false), 600)
-        // Clear streaming tracking sets
         streamingNodeIdsRef.current = new Set()
         streamingLinkIdsRef.current = new Set()
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') return
+        if (isAbortError(error)) return
         const message = error instanceof Error ? error.message : 'AI request failed.'
         if (workspacePageMountedRef.current) setErrorBanner(message)
         throw error
@@ -1190,9 +1314,13 @@ export function WorkspaceCanvasPage() {
           promptAbortRef.current = null
           if (workspacePageMountedRef.current) setStreaming(false)
         }
+        streamingNodeIdsRef.current = new Set()
+        streamingLinkIdsRef.current = new Set()
+        setGenerationSteps([])
+        generationBaselineRef.current = null
       }
     },
-    [workspaceSlug, session, consumePromptStreamEvent, flushDirtyPositions],
+    [workspaceSlug, session, consumePromptStreamEvent, flushDirtyPositions, queryClient],
   )
 
   useEffect(() => {
@@ -1218,6 +1346,13 @@ export function WorkspaceCanvasPage() {
   const sendChat = async () => {
     const prompt = chatInput.trim()
     if (!prompt || !session || streaming) return
+    const snap = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
+    if (!snap) return
+    const baseline: GenerationBaseline = {
+      session: cloneSession(snap),
+      chatMessages: chatMessages.map((m) => ({ ...m })),
+      sourcesList: sourcesList.map((s) => ({ ...s })),
+    }
     setChatInput('')
     setChatMessages((prev) => [
       ...prev,
@@ -1231,7 +1366,7 @@ export function WorkspaceCanvasPage() {
     try {
       // Chat prompts always go to Context Agent (no anchor).
       // Only explicit expand-button clicks send an anchor_node_id.
-      await runSessionPrompt(prompt, null)
+      await runSessionPrompt(prompt, null, { baseline })
     } catch {
       /* error banner set in runSessionPrompt */
     }
@@ -1545,7 +1680,7 @@ export function WorkspaceCanvasPage() {
         <div className='ws-error-banner' role='alert'>
           {errorBanner}
           <button type='button' onClick={() => setErrorBanner(null)} aria-label='Dismiss'>
-            ×
+            <UiDismissX size={18} />
           </button>
         </div>
       ) : null}
@@ -1587,6 +1722,20 @@ export function WorkspaceCanvasPage() {
                 onViewportChange={onViewportChange}
                 fitInset={fitInset}
               />
+              {streaming ? (
+                <CurioGenerationOverlay
+                  open
+                  headline={generationKind === 'expand' ? 'Expanding your map' : 'Generating your map'}
+                  kicker={
+                    session.mode === 'plan'
+                      ? 'Plan mode · agents are structuring your ideas'
+                      : 'Research mode · agents are building your map'
+                  }
+                  steps={generationSteps}
+                  onStop={stopGeneration}
+                  recoveryHint='Stop discards this run and restores your canvas and chat to how they looked before you sent.'
+                />
+              ) : null}
               {focusedNode ? (
                 <div
                   ref={stylePopRef}
@@ -1760,7 +1909,7 @@ export function WorkspaceCanvasPage() {
                     disabled={dockPopover !== 'manual'}
                     onClick={closeManualFlyout}
                   >
-                    ×
+                    <UiDismissX />
                   </button>
                   <button
                     type='button'
@@ -1871,6 +2020,16 @@ export function WorkspaceCanvasPage() {
                   className={`mf-dock-pop mf-dock-pop--layout${dockPopover === 'layout' ? ' is-open' : ''}`}
                   aria-hidden={dockPopover !== 'layout'}
                 >
+                  <button
+                    type='button'
+                    className='mf-dock-pop__close'
+                    title='Close'
+                    aria-label='Close layout options'
+                    disabled={dockPopover !== 'layout'}
+                    onClick={() => setDockPopover(null)}
+                  >
+                    <UiDismissX />
+                  </button>
                   {session ? (
                     <LayoutModePanel
                       value={session.layout_mode}
@@ -1985,6 +2144,16 @@ export function WorkspaceCanvasPage() {
                 role='group'
                 aria-label='Bar position'
               >
+                <button
+                  type='button'
+                  className='mf-dock-pop__close'
+                  title='Close'
+                  aria-label='Close bar position picker'
+                  disabled={dockPopover !== 'position'}
+                  onClick={() => setDockPopover(null)}
+                >
+                  <UiDismissX />
+                </button>
                 <p className='mf-dock-pop__title'>Place bar</p>
                 <div className='mf-position-grid'>
                   <button
@@ -2053,9 +2222,7 @@ export function WorkspaceCanvasPage() {
                 setDockOpen(false)
               }}
             >
-              <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='round' aria-hidden>
-                <path d='M6 6l12 12M6 18L18 6' />
-              </svg>
+              <UiDismissX size={18} />
             </button>
           </div>
         </nav>
@@ -2087,7 +2254,7 @@ export function WorkspaceCanvasPage() {
                   onClick={closeInspectorPanel}
                   aria-label='Close panel'
                 >
-                  ×
+                  <UiDismissX size={20} />
                 </button>
               </div>
               <div className='mf-chat-stream'>
@@ -2128,7 +2295,7 @@ export function WorkspaceCanvasPage() {
                       onClick={closeInspectorPanel}
                       aria-label='Close panel'
                     >
-                      ×
+                      <UiDismissX size={20} />
                     </button>
                   </div>
                   <div className='mf-node-catalog'>
@@ -2174,7 +2341,7 @@ export function WorkspaceCanvasPage() {
                         onClick={closeInspectorPanel}
                         aria-label='Close panel'
                       >
-                        ×
+                        <UiDismissX size={20} />
                       </button>
                     </div>
                     <p className='mf-detail-kicker'>{copy.detailKicker}</p>
@@ -2357,7 +2524,7 @@ export function WorkspaceCanvasPage() {
                   onClick={closeInspectorPanel}
                   aria-label='Close panel'
                 >
-                  ×
+                  <UiDismissX size={20} />
                 </button>
               </div>
               <div className='mf-sources-scroll'>

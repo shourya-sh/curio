@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { AppTopBar } from '../components/AppTopBar'
 import { useAuth } from '../lib/AuthContext'
-import { deleteAccount, getProfile, updateProfile, type Profile, type ProfileUpdatePayload } from '../lib/profile'
+import { deleteAccount, getProfile, updateProfile, type ProfileUpdatePayload } from '../lib/profile'
 
 function maskKey(key: string): string {
   if (key.length <= 8) return '****'
