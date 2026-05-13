@@ -1,5 +1,5 @@
 /** Keys persisted alongside optional `topics` bullet list in `nodes.subtopics` JSONB. */
-export const STYLE_KEYS = new Set(['radiusPx', 'fontSizePx', 'fontAuto', 'fontFamily'])
+export const STYLE_KEYS = new Set(['radiusPx', 'fontSizePx', 'fontAuto', 'fontFamily', 'textColor'])
 
 function topicStringsFromArray(arr: unknown[]): string[] {
   return arr

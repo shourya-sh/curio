@@ -6,6 +6,20 @@ export const NODE_TINT_CHOICES = [
   '#c8d6ff', '#b3f0d4', '#d4f0ff', '#e8d4ff', '#fff3bf',
 ] as const
 
+/** Normalize user or API input to `#rrggbb`, or null if invalid. */
+export function normalizeNodeFillHex(raw: string): string | null {
+  let s = raw.trim()
+  if (s.startsWith('#')) s = s.slice(1)
+  if (s.length === 3 && /^[0-9a-f]{3}$/i.test(s)) {
+    s = s
+      .split('')
+      .map((ch) => ch + ch)
+      .join('')
+  }
+  if (!/^[0-9a-f]{6}$/i.test(s)) return null
+  return `#${s.toLowerCase()}`
+}
+
 const MATRIX_EXTRA = [
   '#eef3ff', '#e0f2fe', '#f3e8ff', '#e0fdfa', '#fef3c7', '#fce7f3', '#ffedd5', '#ecfccb',
   '#f0fdf4', '#f5f3ff', '#f8fafc', '#ecfeff',
@@ -21,7 +35,8 @@ export function NodeColorField({ value, onChange, nodeId }: Props) {
   const popId = useId()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement | null>(null)
-  const hexForPicker = value && /^#[0-9A-Fa-f]{6}$/i.test(value) ? value : '#c7e2ff'
+  const normalizedPicker = value ? normalizeNodeFillHex(value) : null
+  const hexForPicker = normalizedPicker ?? '#c7e2ff'
 
   useEffect(() => {
     if (!open) return

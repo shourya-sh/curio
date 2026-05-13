@@ -8,6 +8,8 @@ import {
   readNodeBoxPx,
 } from '../../lib/nodeDisplay'
 import { nodeOrbStyle } from '../../lib/nodeOrbStyle'
+import type { NodeStyleDelta } from '../../lib/manualGraph'
+import { NodeOrbitCluster } from './NodeOrbitCluster'
 
 function bezierForEdge(x1: number, y1: number, x2: number, y2: number): string {
   const dx = x2 - x1
@@ -101,6 +103,10 @@ type Props = {
   /** Per-side padding (in css px) the fit-to-view algorithm should leave free.
    *  Used to keep the floating control dock from overlapping the fitted content. */
   fitInset?: { top: number; right: number; bottom: number; left: number }
+  /** When set, hover-only orbit controls render for this node (parent owns hover state). */
+  hoveredNodeId?: number | null
+  onNodeStyleDelta?: (nodeId: number, delta: NodeStyleDelta & { color?: string | null; clearManualRadius?: boolean }) => void
+  onRequestRename?: (nodeId: number) => void
 }
 
 export const MindMapCanvas = forwardRef<MindMapCanvasHandle, Props>(function MindMapCanvas(
@@ -125,6 +131,9 @@ export const MindMapCanvas = forwardRef<MindMapCanvasHandle, Props>(function Min
     newLinkIds,
     onViewportChange,
     fitInset,
+    hoveredNodeId = null,
+    onNodeStyleDelta,
+    onRequestRename,
   }: Props,
   ref,
 ) {
@@ -505,7 +514,7 @@ export const MindMapCanvas = forwardRef<MindMapCanvasHandle, Props>(function Min
 
   const onBackgroundPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if ((e.target as HTMLElement).closest('.mm-orb')) return
+      if ((e.target as HTMLElement).closest('.mm-orb-shell')) return
       const panWithPrimary =
         !placeNodeMode && e.button === 0 && (spaceDownRef.current || handToolRef.current)
       if (!placeNodeMode && (e.button === 1 || panWithPrimary)) {
@@ -530,7 +539,7 @@ export const MindMapCanvas = forwardRef<MindMapCanvasHandle, Props>(function Min
 
   const onBackgroundClick = useCallback(
     (e: React.MouseEvent) => {
-      if ((e.target as HTMLElement).closest('.mm-orb')) return
+      if ((e.target as HTMLElement).closest('.mm-orb-shell')) return
       if (connectMode) {
         if (wireDraftRef.current) {
           setWireDraft(null)
@@ -732,47 +741,75 @@ export const MindMapCanvas = forwardRef<MindMapCanvasHandle, Props>(function Min
         const wireTarget = connectMode && wireTargetId === n.id
         const isDragging = drag?.id === n.id
         const isStreamingIn = streamingNodeIds?.has(n.id)
+        const shellPadX = 42
+        const shellPadY = 52
+        const shellW = box.width + shellPadX * 2
+        const shellH = box.height + shellPadY * 2
+        const showOrbit =
+          hoveredNodeId === n.id && onNodeStyleDelta && !connectMode && !placeNodeMode && !handToolActive
         return (
           <div
             key={n.id}
-            role='button'
-            tabIndex={0}
-            className={`mm-orb${isSel ? ' mm-orb--selected' : ''}${wireFrom ? ' mm-orb--wire-from' : ''}${
-              wireTarget ? ' mm-orb--wire-target' : ''
-            }${connectMode && !placeNodeMode ? ' mm-orb--connect-target' : ''}${
-              isDragging ? ' mm-orb--dragging' : ''
-            }${isStreamingIn ? ' mm-orb--streaming-in' : ''}`}
-            style={{
-              left,
-              top,
-              width: `${box.width}px`,
-              height: `${box.height}px`,
-              aspectRatio: box.manual ? '1' : 'auto',
-              background: orb.background,
-              color: orb.color,
-              borderRadius: box.manual ? '999px' : '999px',
-              ['--mm-orb-font-size' as string]: `${box.fontSize}px`,
-              ['--mm-orb-lines' as string]: box.lines,
-              boxShadow: isSel
-                ? '0 0 0 3px rgba(20, 184, 166, 0.55), 0 12px 36px rgba(15, 23, 42, 0.12)'
-                : '0 8px 28px rgba(15, 23, 42, 0.1)',
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') onSelect(n.id)
-            }}
-            onPointerDown={(e) => onPointerDownOrb(e, n)}
+            className={`mm-orb-shell${hoveredNodeId === n.id ? ' mm-orb-shell--hot' : ''}${
+              isDragging ? ' mm-orb-shell--dragging' : ''
+            }`}
+            style={{ left, top, width: `${shellW}px`, height: `${shellH}px` }}
             onPointerEnter={() => {
-              if (connectMode) return
+              if (connectMode || placeNodeMode || handToolActive) return
               onHoverNode(n.id)
             }}
-            onPointerLeave={() => {
-              if (connectMode) return
+            onPointerLeave={(e) => {
+              if (connectMode || placeNodeMode || handToolActive) return
+              const rel = e.relatedTarget as Node | null
+              if (rel && (e.currentTarget as HTMLElement).contains(rel)) return
               onHoverNode(null)
             }}
           >
-            <span className='mm-orb__text' title={n.topic}>
-              {n.topic}
-            </span>
+            <div
+              role='button'
+              tabIndex={0}
+              className={`mm-orb${isSel ? ' mm-orb--selected' : ''}${wireFrom ? ' mm-orb--wire-from' : ''}${
+                wireTarget ? ' mm-orb--wire-target' : ''
+              }${connectMode && !placeNodeMode ? ' mm-orb--connect-target' : ''}${
+                isDragging ? ' mm-orb--dragging' : ''
+              }${isStreamingIn ? ' mm-orb--streaming-in' : ''}`}
+              style={{
+                width: `${box.width}px`,
+                height: `${box.height}px`,
+                aspectRatio: box.manual ? '1' : 'auto',
+                background: orb.background,
+                color: box.labelColor ?? orb.color,
+                fontFamily: box.fontFamilyCss,
+                borderRadius: box.manual ? '999px' : '999px',
+                ['--mm-orb-font-size' as string]: `${box.fontSize}px`,
+                ['--mm-orb-lines' as string]: box.lines,
+                boxShadow: isSel
+                  ? '0 0 0 3px rgba(20, 184, 166, 0.55), 0 12px 36px rgba(15, 23, 42, 0.12)'
+                  : '0 8px 28px rgba(15, 23, 42, 0.1)',
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') onSelect(n.id)
+              }}
+              onPointerDown={(e) => onPointerDownOrb(e, n)}
+            >
+              <span className='mm-orb__text' title={n.topic}>
+                {n.topic}
+              </span>
+            </div>
+            {showOrbit ? (
+              <div
+                className='mm-orb-orbit'
+                style={{ transform: `scale(${1 / viewport.scale})` }}
+              >
+                <NodeOrbitCluster
+                  node={n}
+                  box={box}
+                  orbitViewportClampKey={`${viewport.x}|${viewport.y}|${viewport.scale}`}
+                  onApplyStyleDelta={(delta) => onNodeStyleDelta(n.id, delta)}
+                  onRename={() => onRequestRename?.(n.id)}
+                />
+              </div>
+            ) : null}
           </div>
         )
         })}

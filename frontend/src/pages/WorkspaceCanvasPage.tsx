@@ -32,7 +32,7 @@ import {
 } from '../lib/api'
 
 import { humanizeAgentToolName, isAbortError } from '../lib/generationUi'
-import { buildManualLinkPayload, buildManualNodePayload, buildNodeStylePatch } from '../lib/manualGraph'
+import { buildManualLinkPayload, buildManualNodePayload, buildNodeUpdateFromStyleDelta } from '../lib/manualGraph'
 import { readNodeRadiusPx } from '../lib/nodeDisplay'
 import { nodeOrbStyle } from '../lib/nodeOrbStyle'
 import { recordSessionOpened } from '../lib/sessionRecent'
@@ -409,14 +409,10 @@ export function WorkspaceCanvasPage() {
   const [linkDeleteConfirm, setLinkDeleteConfirm] = useState<LinkOut | null>(null)
   const [renamingNodeId, setRenamingNodeId] = useState<number | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  const [stylePopPlacement, setStylePopPlacement] = useState<'top' | 'bottom'>('top')
-  const [stylePopPos, setStylePopPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
-
   const syncChainRef = useRef<Promise<void>>(Promise.resolve())
   const historyRef = useRef<HistoryEntry[]>([])
   const historyIndexRef = useRef(-1)
   const canvasRef = useRef<HTMLElement | null>(null)
-  const stylePopRef = useRef<HTMLDivElement | null>(null)
   const linkPopWrapRef = useRef<HTMLDivElement | null>(null)
   const linkLocalStyleMigratedRef = useRef(false)
   const [linkPopSubmenu, setLinkPopSubmenu] = useState<'color' | 'style' | null>(null)
@@ -873,6 +869,21 @@ export function WorkspaceCanvasPage() {
       commitHistoryEntry(entry)
     },
     [commitHistoryEntry, mutUpdateNode, queryClient, session, workspaceSlug],
+  )
+
+  const handleNodeStyleDelta = useCallback(
+    (
+      nodeId: number,
+      delta: Parameters<typeof buildNodeUpdateFromStyleDelta>[1] & { clearManualRadius?: boolean },
+    ) => {
+      const current = queryClient.getQueryData<SessionDetail>(['session', workspaceSlug])
+      const node = current?.nodes.find((item) => item.id === nodeId)
+      if (!node) return
+      const patch = buildNodeUpdateFromStyleDelta(node, delta)
+      if (Object.keys(patch).length === 0) return
+      applyTrackedNodePatch(nodeId, patch)
+    },
+    [applyTrackedNodePatch, queryClient, workspaceSlug],
   )
 
   const applyTrackedLinkPatch = useCallback(
@@ -1374,16 +1385,6 @@ export function WorkspaceCanvasPage() {
 
   const showRightPanel = rightPanelMode !== 'none'
   const mainClassName = `mindforge-main${!showRightPanel ? ' mindforge-main--no-right' : ''}`
-  const focusedNode: NodeOut | null =
-    session && selectedLinkId == null && !connectMode && !placeNodeMode && (hoveredId != null || selectedId != null)
-      ? session.nodes.find((n) => n.id === (hoveredId ?? selectedId)) ?? null
-      : null
-  const focusedStyle = focusedNode
-    ? {
-        left: `${stylePopPos.left}px`,
-        top: `${stylePopPos.top}px`,
-      }
-    : undefined
   const renamingNode = session?.nodes.find((n) => n.id === renamingNodeId) ?? null
   const renameLimit = renamingNode ? nodeTitleCharLimit(readNodeRadiusPx(renamingNode)) : 24
   const selectedLink = session?.links.find((l) => l.id === selectedLinkId) ?? null
@@ -1403,54 +1404,6 @@ export function WorkspaceCanvasPage() {
         })
         .filter((item): item is { link: LinkOut; other: NodeOut; direction: 'Child' | 'Parent' } => Boolean(item))
     : []
-
-  useLayoutEffect(() => {
-    if (!focusedNode || !canvasRef.current || !stylePopRef.current) return
-
-    const updatePosition = () => {
-      const canvasEl = canvasRef.current
-      const popEl = stylePopRef.current
-      if (!canvasEl || !popEl) return
-      const canvasRect = canvasEl.getBoundingClientRect()
-
-      const xRatio = focusedNode.position_x / CANVAS_W
-      const yRatio = focusedNode.position_y / CANVAS_H
-      const nodeX = canvasRect.left + xRatio * canvasRect.width
-      const nodeY = canvasRect.top + yRatio * canvasRect.height
-      const nodeRadius = readNodeRadiusPx(focusedNode) * (canvasRect.width / CANVAS_W)
-      const gap = 12
-
-      const popRect = popEl.getBoundingClientRect()
-      const topCandidate = nodeY - nodeRadius - popRect.height - gap
-      const bottomCandidate = nodeY + nodeRadius + gap
-      const placeTop = topCandidate >= canvasRect.top + 8
-      let popTopViewport = placeTop
-        ? topCandidate
-        : Math.min(bottomCandidate, canvasRect.bottom - popRect.height - 8)
-      let centerViewport = nodeX
-
-      const halfW = popRect.width / 2
-      centerViewport = Math.min(canvasRect.right - halfW - 8, Math.max(canvasRect.left + halfW + 8, centerViewport))
-      popTopViewport = Math.min(
-        canvasRect.bottom - popRect.height - 8,
-        Math.max(canvasRect.top + 8, popTopViewport),
-      )
-
-      setStylePopPlacement(placeTop ? 'top' : 'bottom')
-      setStylePopPos({
-        left: centerViewport - canvasRect.left,
-        top: popTopViewport - canvasRect.top,
-      })
-    }
-
-    updatePosition()
-    const raf = requestAnimationFrame(updatePosition)
-    window.addEventListener('resize', updatePosition)
-    return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('resize', updatePosition)
-    }
-  }, [focusedNode])
 
   useEffect(() => {
     setLinkPopSubmenu(null)
@@ -1521,6 +1474,7 @@ export function WorkspaceCanvasPage() {
     if (dockPopover == null) return
     const target = e.target as HTMLElement
     if (target.closest('.mf-bottom-dock')) return
+    if (target.closest('.mf-link-pop-wrap')) return
     setDockPopover(null)
     setPlaceNodeMode(false)
     setConnectMode(false)
@@ -1568,11 +1522,17 @@ export function WorkspaceCanvasPage() {
     enqueueHistorySync(entry.syncForward)
   }
 
-  const openRenameModal = () => {
-    if (!focusedNode) return
-    setRenamingNodeId(focusedNode.id)
-    setRenameDraft(focusedNode.topic ?? '')
-  }
+  const openRenameModal = useCallback(
+    (nodeId?: number) => {
+      const id = nodeId ?? selectedId
+      if (id == null || !session) return
+      const node = session.nodes.find((n) => n.id === id)
+      if (!node) return
+      setRenamingNodeId(node.id)
+      setRenameDraft(node.topic ?? '')
+    },
+    [session, selectedId],
+  )
 
   const submitRename = () => {
     if (!session || !renamingNode) return
@@ -1721,6 +1681,9 @@ export function WorkspaceCanvasPage() {
                 newLinkIds={streamingLinkIdsRef.current}
                 onViewportChange={onViewportChange}
                 fitInset={fitInset}
+                hoveredNodeId={hoveredId}
+                onNodeStyleDelta={handleNodeStyleDelta}
+                onRequestRename={openRenameModal}
               />
               {streaming ? (
                 <CurioGenerationOverlay
@@ -1735,140 +1698,6 @@ export function WorkspaceCanvasPage() {
                   onStop={stopGeneration}
                   recoveryHint='Stop discards this run and restores your canvas and chat to how they looked before you sent.'
                 />
-              ) : null}
-              {focusedNode ? (
-                <div
-                  ref={stylePopRef}
-                  className={`mf-node-style-pop mf-node-style-pop--${stylePopPlacement}`}
-                  style={focusedStyle}
-                >
-                  <div className='mf-node-style-pop__row'>
-                    <span>Style</span>
-                    <div className='mf-node-style-pop__actions'>
-                      <span className='mf-node-style-pop__name'>{focusedNode.topic || 'Untitled'}</span>
-                      <button
-                        type='button'
-                        className='mf-node-style-pop__rename'
-                        title='Rename node title'
-                        onClick={openRenameModal}
-                      >
-                        <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2'>
-                          <path d='M4 7h16M12 7v12M8 19h8' strokeLinecap='round' strokeLinejoin='round' />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <NodeColorField
-                    nodeId={focusedNode.id}
-                    value={focusedNode.color ?? null}
-                    onChange={(hex) => applyTrackedNodePatch(focusedNode.id, buildNodeStylePatch({ color: hex }))}
-                  />
-                  <label className='mf-node-style-pop__size'>
-                    <span>Size</span>
-                    <input
-                      type='range'
-                      min={28}
-                      max={100}
-                      step={1}
-                      value={readNodeRadiusPx(focusedNode)}
-                      onChange={(e) => applyTrackedNodePatch(focusedNode.id, buildNodeStylePatch({ radiusPx: Number(e.target.value) }))}
-                    />
-                  </label>
-                </div>
-              ) : null}
-              {selectedLink ? (
-                <div
-                  ref={linkPopWrapRef}
-                  className='mf-link-pop-wrap'
-                  style={{ left: `${linkPopPos.left}px`, top: `${linkPopPos.top}px` }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  role='presentation'
-                >
-                  <div className='mf-link-toolbar' role='toolbar' aria-label='Connection'>
-                    <button
-                      type='button'
-                      className={`mf-link-toolbar-btn${linkPopSubmenu === 'color' ? ' active' : ''}`}
-                      title='Line color'
-                      aria-pressed={linkPopSubmenu === 'color'}
-                      onClick={() => setLinkPopSubmenu((s) => (s === 'color' ? null : 'color'))}
-                    >
-                      <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
-                        <path
-                          d='M12 3c-4 4-8 7.5-8 11a8 8 0 0 0 16 0c0-3.5-4-7-8-11z'
-                          strokeLinejoin='round'
-                        />
-                        <circle cx='12' cy='14' r='2.5' fill='currentColor' stroke='none' opacity='0.35' />
-                      </svg>
-                    </button>
-                    <button
-                      type='button'
-                      className={`mf-link-toolbar-btn${linkPopSubmenu === 'style' ? ' active' : ''}`}
-                      title='Line style'
-                      aria-pressed={linkPopSubmenu === 'style'}
-                      onClick={() => setLinkPopSubmenu((s) => (s === 'style' ? null : 'style'))}
-                    >
-                      <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
-                        <path d='M5 19L19 5' strokeLinecap='round' />
-                        <circle cx='6' cy='18' r='2.5' fill='currentColor' />
-                        <circle cx='18' cy='6' r='2.5' fill='currentColor' />
-                      </svg>
-                    </button>
-                    <button
-                      type='button'
-                      className='mf-link-toolbar-btn mf-link-toolbar-btn--danger'
-                      title='Delete connection'
-                      onClick={requestDeleteSelectedLink}
-                    >
-                      <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
-                        <path d='M3 6h18M8 6V4h8v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6' strokeLinecap='round' strokeLinejoin='round' />
-                      </svg>
-                    </button>
-                  </div>
-                  {linkPopSubmenu === 'color' ? (
-                    <div className='mf-link-submenu mf-link-submenu--color' onPointerDown={(e) => e.stopPropagation()}>
-                      <p className='mf-link-submenu__title'>
-                        <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
-                          <path d='M12 3c-4 4-8 7.5-8 11a8 8 0 0 0 16 0c0-3.5-4-7-8-11z' strokeLinejoin='round' />
-                        </svg>
-                        Line color
-                      </p>
-                      <NodeColorField
-                        nodeId={selectedLink.id}
-                        value={selectedLink.color ?? null}
-                        onChange={(hex) => applyTrackedLinkPatch(selectedLink.id, { color: hex })}
-                      />
-                    </div>
-                  ) : null}
-                  {linkPopSubmenu === 'style' ? (
-                    <div className='mf-link-submenu mf-link-submenu--style' onPointerDown={(e) => e.stopPropagation()}>
-                      <p className='mf-link-submenu__title'>
-                        <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
-                          <path d='M5 19L19 5' strokeLinecap='round' />
-                          <circle cx='6' cy='18' r='2' fill='currentColor' />
-                          <circle cx='18' cy='6' r='2' fill='currentColor' />
-                        </svg>
-                        Line style
-                      </p>
-                      <div className='mf-link-style-grid' role='group' aria-label='Line style'>
-                        {(['solid', 'dashed', 'dotted', 'bold'] as LinkLineStyle[]).map((style) => (
-                          <button
-                            key={style}
-                            type='button'
-                            className={`mf-link-style-tile${selectedLinkStyle === style ? ' active' : ''}`}
-                            title={style}
-                            aria-pressed={selectedLinkStyle === style}
-                            onClick={() => applyTrackedLinkPatch(selectedLink.id, { line_style: style })}
-                          >
-                            <svg width='32' height='22' viewBox='0 0 24 24' className='mf-link-style-tile__glyph'>
-                              <LinkStyleGlyph kind={style} />
-                            </svg>
-                            <span className='mf-link-style-tile__label'>{style}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
               ) : null}
             </>
           )}
@@ -2237,6 +2066,100 @@ export function WorkspaceCanvasPage() {
             <span className='mf-bottom-dock-handle__grip' aria-hidden />
           </button>
         )}
+        {session && selectedLink ? (
+          <div
+            ref={linkPopWrapRef}
+            className='mf-link-pop-wrap'
+            style={{ left: `${linkPopPos.left}px`, top: `${linkPopPos.top}px` }}
+            onPointerDown={(e) => e.stopPropagation()}
+            role='presentation'
+          >
+            <div className='mf-link-toolbar' role='toolbar' aria-label='Connection'>
+              <button
+                type='button'
+                className={`mf-link-toolbar-btn${linkPopSubmenu === 'color' ? ' active' : ''}`}
+                title='Line color'
+                aria-pressed={linkPopSubmenu === 'color'}
+                onClick={() => setLinkPopSubmenu((s) => (s === 'color' ? null : 'color'))}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path
+                    d='M12 3c-4 4-8 7.5-8 11a8 8 0 0 0 16 0c0-3.5-4-7-8-11z'
+                    strokeLinejoin='round'
+                  />
+                  <circle cx='12' cy='14' r='2.5' fill='currentColor' stroke='none' opacity='0.35' />
+                </svg>
+              </button>
+              <button
+                type='button'
+                className={`mf-link-toolbar-btn${linkPopSubmenu === 'style' ? ' active' : ''}`}
+                title='Line style'
+                aria-pressed={linkPopSubmenu === 'style'}
+                onClick={() => setLinkPopSubmenu((s) => (s === 'style' ? null : 'style'))}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path d='M5 19L19 5' strokeLinecap='round' />
+                  <circle cx='6' cy='18' r='2.5' fill='currentColor' />
+                  <circle cx='18' cy='6' r='2.5' fill='currentColor' />
+                </svg>
+              </button>
+              <button
+                type='button'
+                className='mf-link-toolbar-btn mf-link-toolbar-btn--danger'
+                title='Delete connection'
+                onClick={requestDeleteSelectedLink}
+              >
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                  <path d='M3 6h18M8 6V4h8v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6' strokeLinecap='round' strokeLinejoin='round' />
+                </svg>
+              </button>
+            </div>
+            {linkPopSubmenu === 'color' ? (
+              <div className='mf-link-submenu mf-link-submenu--color' onPointerDown={(e) => e.stopPropagation()}>
+                <p className='mf-link-submenu__title'>
+                  <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                    <path d='M12 3c-4 4-8 7.5-8 11a8 8 0 0 0 16 0c0-3.5-4-7-8-11z' strokeLinejoin='round' />
+                  </svg>
+                  Line color
+                </p>
+                <NodeColorField
+                  nodeId={selectedLink.id}
+                  value={selectedLink.color ?? null}
+                  onChange={(hex) => applyTrackedLinkPatch(selectedLink.id, { color: hex })}
+                />
+              </div>
+            ) : null}
+            {linkPopSubmenu === 'style' ? (
+              <div className='mf-link-submenu mf-link-submenu--style' onPointerDown={(e) => e.stopPropagation()}>
+                <p className='mf-link-submenu__title'>
+                  <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' aria-hidden>
+                    <path d='M5 19L19 5' strokeLinecap='round' />
+                    <circle cx='6' cy='18' r='2' fill='currentColor' />
+                    <circle cx='18' cy='6' r='2' fill='currentColor' />
+                  </svg>
+                  Line style
+                </p>
+                <div className='mf-link-style-grid' role='group' aria-label='Line style'>
+                  {(['solid', 'dashed', 'dotted', 'bold'] as LinkLineStyle[]).map((style) => (
+                    <button
+                      key={style}
+                      type='button'
+                      className={`mf-link-style-tile${selectedLinkStyle === style ? ' active' : ''}`}
+                      title={style}
+                      aria-pressed={selectedLinkStyle === style}
+                      onClick={() => applyTrackedLinkPatch(selectedLink.id, { line_style: style })}
+                    >
+                      <svg width='32' height='22' viewBox='0 0 24 24' className='mf-link-style-tile__glyph'>
+                        <LinkStyleGlyph kind={style} />
+                      </svg>
+                      <span className='mf-link-style-tile__label'>{style}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         </div>
 
         {showRightPanel ? (

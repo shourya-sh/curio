@@ -1,8 +1,7 @@
 import type { NodeOut } from './api'
 import { readNodeBoxPx } from './nodeDisplay'
+import { orbitHoverHullHalfExtents } from './orbitLayout'
 
-const HULL_EXTRA_X = 52
-const HULL_EXTRA_Y = 52
 const SEP = 10
 const ITERS = 14
 
@@ -40,11 +39,12 @@ export function computeOrbitClearanceOffsets(
 
   const p0 = getBase(anchorId)
   const b0 = readNodeBoxPx(anchor)
+  const hullPad = orbitHoverHullHalfExtents(b0)
   const hull: Rect = {
     cx: p0.x,
     cy: p0.y,
-    hw: b0.width / 2 + HULL_EXTRA_X,
-    hh: b0.height / 2 + HULL_EXTRA_Y,
+    hw: hullPad.hw,
+    hh: hullPad.hh,
   }
 
   const offsets = new Map<number, { dx: number; dy: number }>()

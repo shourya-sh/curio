@@ -7,6 +7,10 @@ services:
       - ./backend/.env
     volumes:
       - ./backend:/app
+    # Helps Docker resolve Supabase / external DB hostnames on some Windows / VPN setups.
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on: []
 
   frontend:
