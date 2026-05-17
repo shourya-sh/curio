@@ -1,6 +1,7 @@
 """Pure SSE transport layer. Validates the session, runs the orchestrator pipeline, and yields SSE events.
 All DB persistence (messages, nodes, links) is handled by the orchestrator."""
 
+import asyncio
 import json
 from starlette.requests import Request
 from sqlalchemy.orm import Session
@@ -54,6 +55,10 @@ async def run_agent_stream(
         db.commit()
         yield sse_event("done", {})
 
+    except asyncio.CancelledError:
+        logger.warning(f"Stream cancelled (client disconnect) session={session_id}")
+        db.rollback()
+
     except Exception as e:
         logger.error(f"Stream error session={session_id}: {e}")
         db.rollback()
@@ -96,6 +101,10 @@ async def run_expand_stream(
 
         db.commit()
         yield sse_event("done", {})
+
+    except asyncio.CancelledError:
+        logger.warning(f"Expand stream cancelled (client disconnect) session={session_id} node={node_id}")
+        db.rollback()
 
     except Exception as e:
         logger.error(f"Expand stream error session={session_id} node={node_id}: {e}")
